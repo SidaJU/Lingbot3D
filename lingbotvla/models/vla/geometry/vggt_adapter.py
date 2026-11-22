@@ -54,11 +54,14 @@ class VGGTFeatureEncoder(nn.Module):
             raise FileNotFoundError(f"VGGT checkpoint does not exist: {checkpoint}")
         payload = torch.load(checkpoint, map_location="cpu")
         state = payload.get("state_dict", payload.get("model", payload)) if isinstance(payload, dict) else payload
+        # The public VGGT-1B checkpoint contains optional camera/point/depth/track
+        # heads. This first LingBot stage instantiates only the aggregator, so
+        # discard checkpoint entries for disabled heads before strict validation.
+        encoder_keys = set(self.encoder.state_dict().keys())
+        state = {key: value for key, value in state.items() if key in encoder_keys}
         missing, unexpected = self.encoder.load_state_dict(state, strict=False)
         if missing:
             raise RuntimeError(f"VGGT checkpoint is missing {len(missing)} parameters")
-        if unexpected:
-            raise RuntimeError(f"VGGT checkpoint has {len(unexpected)} unexpected parameters")
         self.requires_grad_(not freeze)
         if freeze:
             self.eval()

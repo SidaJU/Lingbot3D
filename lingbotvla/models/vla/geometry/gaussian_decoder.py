@@ -20,16 +20,18 @@ from torch import Tensor, nn
 class GaussianParameters:
     means: Tensor
     scales: Tensor
+    rotations: Tensor
     colors: Tensor
     opacities: Tensor
+    sh: Tensor
 
 
 class GaussianParameterDecoder(nn.Module):
     """Decode post-VLM 3D tokens into a compact world-space Gaussian set.
 
-    The decoder deliberately uses a minimal isotropic screen-space renderer in
-    the first stage.  Rotation and spherical harmonics can be added later
-    without changing the token contract.
+    The decoder emits the standard Gaussian attributes consumed by the fused
+    CUDA rasterizer: means, scales, quaternion rotations, opacity and degree-0
+    spherical-harmonic RGB coefficients.
     """
 
     def __init__(self, hidden_dim: int, num_gaussians: int = 256) -> None:
@@ -39,7 +41,7 @@ class GaussianParameterDecoder(nn.Module):
         self.to_params = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, 10),
+            nn.Linear(hidden_dim, 14),
         )
 
     def forward(self, tokens: Tensor) -> GaussianParameters:
@@ -51,7 +53,16 @@ class GaussianParameterDecoder(nn.Module):
         raw = self.to_params(self.norm(tokens.to(dtype=decoder_dtype)))
         means = torch.tanh(raw[..., 0:3])
         scales = torch.nn.functional.softplus(raw[..., 3:6]) + 1e-3
-        colors = torch.sigmoid(raw[..., 6:9])
-        opacities = torch.sigmoid(raw[..., 9:10])
-        return GaussianParameters(means=means, scales=scales, colors=colors, opacities=opacities)
+        rotations = raw[..., 6:10]
+        rotations = rotations / rotations.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        colors = torch.sigmoid(raw[..., 10:13])
+        opacities = torch.sigmoid(raw[..., 13:14])
+        return GaussianParameters(
+            means=means,
+            scales=scales,
+            rotations=rotations,
+            colors=colors,
+            opacities=opacities,
+            sh=colors.unsqueeze(-2),
+        )
 # [SIDA--]

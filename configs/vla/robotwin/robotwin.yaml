@@ -148,6 +148,11 @@ train:
   gaussian_adapter_heads: 8
   gaussian_render_loss_weight: 0.0
   gaussian_render_size: 64
+  gaussian_use_fused_rasterizer: true
+  gaussian_vggt_model_path: /data/lingbot/models/VGGT-1B/model.pt
+  gaussian_vggt_image_size: 518
+  gaussian_vggt_feature_dim: 2048
+  gaussian_vggt_freeze: true
   gaussian_camera_config: ./configs/robot_configs/robotwin_camera.json
   gaussian_render_view: camera_top
   gaussian_enable_lora: false

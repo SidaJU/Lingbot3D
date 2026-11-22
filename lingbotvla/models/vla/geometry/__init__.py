@@ -19,6 +19,7 @@ from .camera_metadata import (
 from .gaussian_prefix import Gaussian3DPrefixAdapter
 from .gaussian_decoder import GaussianParameterDecoder, GaussianParameters
 from .gaussian_renderer import DifferentiableGaussianRenderer
+from .vggt_adapter import VGGTFeatureEncoder
 from .render_loss import compute_rgb_render_loss
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "GaussianParameterDecoder",
     "GaussianParameters",
     "DifferentiableGaussianRenderer",
+    "VGGTFeatureEncoder",
     "canonical_camera_name",
     "compute_rgb_render_loss",
     "get_camera_params_for_view",

@@ -14,17 +14,94 @@ from torch import Tensor, nn
 
 from .gaussian_decoder import GaussianParameters
 
+try:
+    from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+    _FUSED_RASTERIZER_AVAILABLE = True
+except ImportError:
+    GaussianRasterizationSettings = None
+    GaussianRasterizer = None
+    _FUSED_RASTERIZER_AVAILABLE = False
+
 
 # [SIDA++] add by SidaZhu for differentiable Gaussian RGB supervision
 class DifferentiableGaussianRenderer(nn.Module):
     """Project decoded Gaussians and alpha-composite them onto a low-res grid."""
 
-    def __init__(self, render_size: int = 64, background: float = 0.0) -> None:
+    def __init__(self, render_size: int = 64, background: float = 0.0, use_fused: bool = True) -> None:
         super().__init__()
         if render_size < 8:
             raise ValueError("render_size must be at least 8")
         self.render_size = int(render_size)
         self.background = float(background)
+        self.use_fused = bool(use_fused)
+        if self.use_fused and not _FUSED_RASTERIZER_AVAILABLE:
+            raise ImportError(
+                "GaussianDream RGB supervision requires diff-gaussian-rasterization. "
+                "Install the CUDA extension before enabling the render loss."
+            )
+
+    def _forward_fused(
+        self,
+        gaussians: GaussianParameters,
+        intrinsics: Tensor,
+        world_to_cam: Tensor,
+        target_hw: tuple[int, int],
+        view_index: int,
+    ) -> Tensor:
+        batch, views = intrinsics.shape[:2]
+        target_h, target_w = map(int, target_hw)
+        device = gaussians.means.device
+        dtype = gaussians.means.dtype
+        output = []
+        for batch_index in range(batch):
+            k = intrinsics[batch_index, view_index].to(device=device, dtype=dtype).clone()
+            k[0, :] *= self.render_size / max(target_w, 1)
+            k[1, :] *= self.render_size / max(target_h, 1)
+            view = world_to_cam[batch_index, view_index].to(device=device, dtype=dtype)
+            fx, fy = k[0, 0], k[1, 1]
+            cx, cy = k[0, 2], k[1, 2]
+            fov_x = 2.0 * torch.atan(torch.tensor(self.render_size, device=device, dtype=dtype) / (2.0 * fx))
+            fov_y = 2.0 * torch.atan(torch.tensor(self.render_size, device=device, dtype=dtype) / (2.0 * fy))
+            tanfovx = torch.tan(fov_x / 2.0).item()
+            tanfovy = torch.tan(fov_y / 2.0).item()
+            projection = torch.zeros((4, 4), device=device, dtype=dtype)
+            projection[0, 0] = 1.0 / tanfovx
+            projection[1, 1] = 1.0 / tanfovy
+            projection[0, 2] = 2.0 * cx / self.render_size - 1.0
+            projection[1, 2] = 2.0 * cy / self.render_size - 1.0
+            projection[2, 2] = 100.0 / 99.99
+            projection[2, 3] = -(100.0 * 0.01) / 99.99
+            projection[3, 2] = 1.0
+            mvp = projection @ view
+            camera_position = torch.linalg.inv(view)[:3, 3]
+            settings = GaussianRasterizationSettings(
+                image_height=self.render_size,
+                image_width=self.render_size,
+                tanfovx=tanfovx,
+                tanfovy=tanfovy,
+                bg=torch.full((3,), self.background, device=device, dtype=dtype),
+                scale_modifier=1.0,
+                viewmatrix=view.transpose(0, 1),
+                projmatrix=mvp.transpose(0, 1),
+                sh_degree=0,
+                campos=camera_position,
+                prefiltered=False,
+                debug=False,
+            )
+            rasterizer = GaussianRasterizer(settings)
+            means2d = torch.zeros_like(gaussians.means[batch_index], requires_grad=gaussians.means.requires_grad)
+            if means2d.requires_grad:
+                means2d.retain_grad()
+            rendered, _ = rasterizer(
+                means3D=gaussians.means[batch_index],
+                means2D=means2d,
+                shs=gaussians.sh[batch_index],
+                opacities=gaussians.opacities[batch_index],
+                scales=gaussians.scales[batch_index],
+                rotations=gaussians.rotations[batch_index],
+            )
+            output.append(rendered)
+        return torch.stack(output, dim=0)
 
     def forward(
         self,
@@ -41,6 +118,8 @@ class DifferentiableGaussianRenderer(nn.Module):
             raise IndexError(f"view_index={view_index} outside {views} camera views")
         if gaussians.means.shape[0] != batch:
             raise ValueError("Gaussian batch and camera batch differ")
+        if self.use_fused:
+            return self._forward_fused(gaussians, intrinsics, world_to_cam, target_hw, view_index)
         target_h, target_w = map(int, target_hw)
         render_h = render_w = self.render_size
         device = gaussians.means.device

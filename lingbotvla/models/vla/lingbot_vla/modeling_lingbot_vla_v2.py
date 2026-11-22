@@ -45,6 +45,7 @@ from lingbotvla.models.vla.geometry import (
     Gaussian3DPrefixAdapter,
     GaussianParameterDecoder,
     compute_rgb_render_loss,
+    VGGTFeatureEncoder,
 )
 
 try:
@@ -508,8 +509,17 @@ class FlowMatchingV2(FlowMatchingV1):
         self.gaussian_num_tokens = int(getattr(self.config, "gaussian_num_tokens", 256))
         if self.enable_gaussian_3d:
             vlm_hidden_size = int(self.qwenvl_with_expert.qwenvl.config.text_config.hidden_size)
+            vggt_path = getattr(self.config, "gaussian_vggt_model_path", None)
+            if not vggt_path:
+                raise ValueError("gaussian_vggt_model_path is required when enable_gaussian_3d=true")
+            self.gaussian_vggt = VGGTFeatureEncoder(
+                model_path=vggt_path,
+                image_size=int(getattr(self.config, "gaussian_vggt_image_size", 518)),
+                feature_dim=int(getattr(self.config, "gaussian_vggt_feature_dim", 2048)),
+                freeze=bool(getattr(self.config, "gaussian_vggt_freeze", True)),
+            )
             self.gaussian_3d_adapter = Gaussian3DPrefixAdapter(
-                feature_dim=vlm_hidden_size,
+                feature_dim=int(getattr(self.config, "gaussian_vggt_feature_dim", 2048)),
                 adapter_dim=int(getattr(self.config, "gaussian_adapter_dim", 512)),
                 num_tokens=self.gaussian_num_tokens,
                 llm_dim=vlm_hidden_size,
@@ -521,8 +531,10 @@ class FlowMatchingV2(FlowMatchingV1):
             )
             self.gaussian_renderer = DifferentiableGaussianRenderer(
                 render_size=int(getattr(self.config, "gaussian_render_size", 64)),
+                use_fused=bool(getattr(self.config, "gaussian_use_fused_rasterizer", True)),
             )
         else:
+            self.gaussian_vggt = None
             self.gaussian_3d_adapter = None
             self.gaussian_decoder = None
             self.gaussian_renderer = None
@@ -563,6 +575,7 @@ class FlowMatchingV2(FlowMatchingV1):
         lang_tokens,
         lang_masks,
         image_grid_thw=None,
+        gaussian_rgb_images=None,
     ):
         if image_grid_thw is None:
             raise ValueError("LingbotVlaV2Policy requires image_grid_thw from the Qwen3-VL image processor.")
@@ -642,9 +655,14 @@ class FlowMatchingV2(FlowMatchingV1):
         # [SIDA++] add by SidaZhu for single-step 3D prefix token generation
         gaussian_3d_tokens = None
         if self.enable_gaussian_3d:
-            if self.gaussian_3d_adapter is None:
-                raise RuntimeError("Gaussian 3D is enabled but its adapter was not initialized")
-            gaussian_3d_tokens = self.gaussian_3d_adapter(img_emb).to(dtype=embed_dtype)
+            if self.gaussian_3d_adapter is None or self.gaussian_vggt is None:
+                raise RuntimeError("Gaussian 3D is enabled but VGGT/adapter was not initialized")
+            if gaussian_rgb_images is None:
+                raise ValueError(
+                    "Gaussian 3D training requires raw multi-view RGB images for the VGGT aggregator"
+                )
+            vggt_features = self.gaussian_vggt(gaussian_rgb_images)
+            gaussian_3d_tokens = self.gaussian_3d_adapter(vggt_features).to(dtype=embed_dtype)
         # [SIDA--]
 
         if self.use_depth_align and self.align_type == "query":
@@ -966,6 +984,7 @@ class FlowMatchingV2(FlowMatchingV1):
             lang_tokens,
             lang_masks,
             image_grid_thw=image_grid_thw,
+            gaussian_rgb_images=render_target_images,
         )
         time_embs, suffix_embs, suffix_pad_masks, suffix_att_masks = self.embed_suffix(
             state, x_t, time

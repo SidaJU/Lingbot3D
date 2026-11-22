@@ -100,6 +100,11 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_adapter_heads: int = 8,
         gaussian_render_loss_weight: float = 0.0,
         gaussian_render_size: int = 64,
+        gaussian_use_fused_rasterizer: bool = True,
+        gaussian_vggt_model_path: Optional[str] = None,
+        gaussian_vggt_image_size: int = 518,
+        gaussian_vggt_feature_dim: int = 2048,
+        gaussian_vggt_freeze: bool = True,
         gaussian_camera_config: Optional[str] = None,
         gaussian_render_view: str = "camera_top",
         gaussian_enable_lora: bool = False,
@@ -121,6 +126,11 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_adapter_heads = gaussian_adapter_heads
         self.gaussian_render_loss_weight = gaussian_render_loss_weight
         self.gaussian_render_size = gaussian_render_size
+        self.gaussian_use_fused_rasterizer = gaussian_use_fused_rasterizer
+        self.gaussian_vggt_model_path = gaussian_vggt_model_path
+        self.gaussian_vggt_image_size = gaussian_vggt_image_size
+        self.gaussian_vggt_feature_dim = gaussian_vggt_feature_dim
+        self.gaussian_vggt_freeze = gaussian_vggt_freeze
         self.gaussian_camera_config = gaussian_camera_config
         self.gaussian_render_view = gaussian_render_view
         self.gaussian_enable_lora = gaussian_enable_lora

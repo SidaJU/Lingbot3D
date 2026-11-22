@@ -130,10 +130,17 @@ For `data_name: multi`, place one generated sidecar directory (with its own
 The matrices remain optional until the Gaussian renderer is enabled.
 
 When `enable_gaussian_3d: true` and `gaussian_render_loss_weight > 0`, the
-post-VLM `gs_3d` span is decoded into world-space Gaussian means/scales/colors
-and rendered from `gaussian_render_view` (default `camera_top`). The first
-renderer is intentionally low resolution (`gaussian_render_size`) so a single
-GPU batch can be smoke-tested before replacing it with a fused rasterizer.
+raw multi-view RGB is first passed through the frozen VGGT aggregator; its
+spatial 3D tokens are then compressed into the VLM `gs_3d` span. The post-VLM
+tokens decode world-space Gaussian means/scales/rotations/opacities/SH and are
+rendered from `gaussian_render_view` (default `camera_top`) by the CUDA
+`diff-gaussian-rasterization` extension. `gaussian_render_size` controls the
+smoke-test resolution; the simplified alpha compositor is no longer the
+default training renderer.
+
+The server environment must provide the VGGT package/checkpoint and compile the
+CUDA rasterizer before enabling the branch. Set `gaussian_vggt_model_path` to
+the downloaded `VGGT-1B/model.pt` and keep `gaussian_use_fused_rasterizer: true`.
 
 <!-- [SIDA--] -->
 

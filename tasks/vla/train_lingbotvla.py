@@ -170,6 +170,26 @@ class MyTrainingArguments(TrainingArguments):
         default_factory=dict,
         metadata={"help": "The config of vaco"},
     )
+    # [SIDA++] add by SidaZhu for the staged Gaussian 3D training branch.
+    # These fields are forwarded into LingbotVLAV2Config; keeping them in the
+    # training parser makes the YAML switches explicit and argparse-safe.
+    enable_gaussian_3d: bool = field(default=False, metadata={"help": "Enable Gaussian 3D supervision."})
+    gaussian_num_tokens: int = field(default=256, metadata={"help": "Number of Gaussian prefix tokens."})
+    gaussian_adapter_dim: int = field(default=512, metadata={"help": "Gaussian adapter width."})
+    gaussian_adapter_heads: int = field(default=8, metadata={"help": "Gaussian adapter attention heads."})
+    gaussian_render_loss_weight: float = field(default=0.0, metadata={"help": "RGB render loss weight."})
+    gaussian_render_size: int = field(default=64, metadata={"help": "Gaussian render resolution."})
+    gaussian_use_fused_rasterizer: bool = field(default=True, metadata={"help": "Use CUDA Gaussian rasterizer."})
+    gaussian_vggt_model_path: Optional[str] = field(default=None, metadata={"help": "VGGT checkpoint path."})
+    gaussian_vggt_image_size: int = field(default=518, metadata={"help": "VGGT input image size."})
+    gaussian_vggt_feature_dim: int = field(default=2048, metadata={"help": "VGGT feature width."})
+    gaussian_vggt_freeze: bool = field(default=True, metadata={"help": "Freeze VGGT backbone."})
+    gaussian_camera_config: Optional[str] = field(default=None, metadata={"help": "Gaussian camera config path."})
+    gaussian_render_view: str = field(default="camera_top", metadata={"help": "Gaussian render view."})
+    gaussian_enable_lora: bool = field(default=False, metadata={"help": "Enable Gaussian/VLM LoRA."})
+    gaussian_lora_rank: int = field(default=8, metadata={"help": "Gaussian LoRA rank."})
+    gaussian_lora_alpha: int = field(default=16, metadata={"help": "Gaussian LoRA alpha."})
+    # [SIDA--]
     attention_implementation: str = field(
         default="flex",
         metadata={"help": "Attention implementation: flex, flex_cached, or eager."},
@@ -379,7 +399,12 @@ def main():
         config_kwargs=config_kwargs,
         moe_implementation=getattr(args.model, 'moe_implementation', None),
     )
-    use_depth_align = True if args.train.align_params != {} else False
+    use_depth_align = bool(
+        args.train.align_params.get(
+            "enable_depth_align",
+            "depth" in args.train.align_params,
+        )
+    )
     use_future_depth = args.train.align_params.get('depth', {}).get('use_future_depth', False)
     use_future_video = use_depth_align and args.train.align_params.get('use_future_video', False)
     depth_model_type = None
@@ -763,13 +788,14 @@ def main():
                 }
                 future_video_effective_fps = micro_batch.pop('future_video_effective_fps', None)
                 depth_forward_time = 0
+                # [SIDA++] Gaussian rendering needs the unnormalized RGB views
+                # even when depth/video teachers are disabled.
+                pil_images = micro_batch.pop('pil_images', None)
+                render_target_images = pil_images
+                # [SIDA--]
                 if use_depth_align:
                     with torch.no_grad():
                         depth_start_time = time.time()
-                        pil_images = micro_batch.pop('pil_images', None)
-                        # [SIDA++] add by SidaZhu for forwarding raw RGB to the Gaussian renderer
-                        render_target_images = pil_images
-                        # [SIDA--]
                         future_pil_images = micro_batch.pop('future_pil_images', None) if (use_future_depth or use_future_video) else None
                         with torch.autocast("cuda", dtype=torch.bfloat16):
                             depth_targets, cls_token = get_depth_target(depth_model_type, (moge_model, morgbd_model), pil_images)

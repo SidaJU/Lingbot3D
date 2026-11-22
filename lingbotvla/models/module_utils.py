@@ -256,6 +256,17 @@ def load_model_weights(
             name = weight_loader.map_ckpt_key(ckpt_key, load_vlm_only=load_vlm_only, post_training=post_training)
             if name is None:
                 continue
+            # [SIDA++] PEFT wraps LoRA-targeted Linear layers and moves their
+            # pretrained weights under ``base_layer``.  Keep the official
+            # checkpoint key format loadable after VLM-only LoRA injection.
+            if name not in buffer_dict and name not in parameter_names:
+                for suffix in (".weight", ".bias"):
+                    if name.endswith(suffix):
+                        base_name = name[: -len(suffix)] + ".base_layer" + suffix
+                        if base_name in parameter_names:
+                            name = base_name
+                            break
+            # [SIDA--]
             if name in buffer_dict:
                 buffer_dict[name] = tensor.clone()
             elif name in parameter_names:
@@ -270,6 +281,16 @@ def load_model_weights(
                     _dispatch_parameter(model, name, tensor, dtensor_factory)
             else:
                 if post_training:
+                    # [SIDA++] A smoke run may intentionally disable the
+                    # depth/video alignment heads while reusing a checkpoint
+                    # trained with them. Their checkpoint tensors are expected
+                    # extras; keep strict validation for every other key.
+                    if any(
+                        marker in name
+                        for marker in ("depth_align", "current_video_align", "future_video_align", "shared_task_proj")
+                    ):
+                        logger.info_rank0(f"Ignoring disabled alignment head checkpoint key: {name}")
+                        continue
                     error_msg = f"Unexpected key '{name}' found in state dict during Post-Training. This is not allowed!!!"
                     logger.info_rank0(error_msg)
                     raise KeyError(error_msg)
@@ -282,7 +303,28 @@ def load_model_weights(
         _dispatch_buffer(model, name, buffer)
 
     if post_training:
-        assert len(parameter_names) == 0, f"Missing {parameter_names} during Post-Training. This is not allowed!!!"
+        # [SIDA++] Newly added Gaussian/LoRA modules intentionally have no
+        # tensors in the official LingBot checkpoint; initialize those modules
+        # locally while retaining strict validation for all original weights.
+        allowed_missing_markers = (
+            "gaussian_vggt.",
+            "gaussian_3d_adapter.",
+            "gaussian_decoder.",
+            "gaussian_renderer.",
+            ".lora_A.",
+            ".lora_B.",
+        )
+        strict_missing = {
+            name for name in parameter_names
+            if not any(marker in name for marker in allowed_missing_markers)
+        }
+        if parameter_names - strict_missing:
+            logger.info_rank0(
+                "Initializing new Gaussian/LoRA parameters absent from the "
+                "official checkpoint."
+            )
+        assert len(strict_missing) == 0, f"Missing {strict_missing} during Post-Training. This is not allowed!!!"
+        # [SIDA--]
         if adanorm_time:
             logger.info_rank0(">>> Parameters in AdaNorm has been ZERO initialized.")
             exclude_keywords = [

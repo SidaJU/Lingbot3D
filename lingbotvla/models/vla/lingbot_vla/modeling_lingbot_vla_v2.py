@@ -134,14 +134,15 @@ class QwenvlWithExpertV2Model(PreTrainedModel):
         vlm_config = AutoConfig.from_pretrained(self.config.tokenizer_path)
         if self.config.vocab_size not in (0, 257152):
             vlm_config.text_config.vocab_size = self.config.vocab_size
-        vlm_config._attn_implementation = "flash_attention_2"
-        vlm_config.text_config._attn_implementation = "flash_attention_2"
+        attention_implementation = getattr(self.config, "attention_implementation", "flash_attention_2")
+        vlm_config._attn_implementation = attention_implementation
+        vlm_config.text_config._attn_implementation = attention_implementation
         vlm_config.vision_config._attn_implementation = self.config.vit_attn_implementation
         self.qwenvl = Qwen3VLForConditionalGeneration._from_config(vlm_config)
         if self.config.use_lm_head:
             self.qwenvl.tie_weights()
 
-        self.config.qwen_expert_config._attn_implementation = "flash_attention_2"
+        self.config.qwen_expert_config._attn_implementation = attention_implementation
         self.qwen_expert = Qwen2ForCausalLM._from_config(self.config.qwen_expert_config, eval=eval)
 
         if getattr(self.config, "adanorm_time", False):
@@ -541,7 +542,15 @@ class FlowMatchingV2(FlowMatchingV1):
         # [SIDA--]
 
         self.config.align_params = getattr(self.config, "align_params", None) or {}
-        if self.config.align_params != {}:
+        self.align_type = self.config.align_params.get("mode", None)
+        # [SIDA++] Gaussian-only mode has no depth head to populate this
+        # legacy span parameter; keep the prefix span helper well-defined.
+        self.num_task_tokens = int(self.config.align_params.get("num_task_tokens", 1))
+        # [SIDA--]
+        depth_alignment_enabled = bool(
+            self.config.align_params.get("enable_depth_align", "depth" in self.config.align_params)
+        )
+        if depth_alignment_enabled:
             self.steps = 0
             self.use_depth_align = True
             self.init_depth_heads(self.config.align_params)
@@ -550,6 +559,7 @@ class FlowMatchingV2(FlowMatchingV1):
                 self.init_video_heads(self.config.align_params)
         else:
             self.use_depth_align = False
+            self.use_future_depth = False
             self.use_future_video = False
             self.use_future_video_patch = False
             self.use_current_video_patch = False
@@ -560,10 +570,8 @@ class FlowMatchingV2(FlowMatchingV1):
             self.block_future_depth_to_action = False
 
         # [SIDA++] add by SidaZhu for an explicit 3D prefix compatibility guard
-        if self.enable_gaussian_3d and not (self.use_depth_align and self.align_type == "query"):
-            raise ValueError(
-                "enable_gaussian_3d requires align_params.mode='query' so the gs_3d prefix span is materialized."
-            )
+        if self.enable_gaussian_3d and self.align_type != "query":
+            raise ValueError("enable_gaussian_3d requires align_params.mode='query' so the gs_3d prefix span is materialized.")
         # [SIDA--]
 
         self.set_requires_grad()
@@ -665,36 +673,34 @@ class FlowMatchingV2(FlowMatchingV1):
             gaussian_3d_tokens = self.gaussian_3d_adapter(vggt_features).to(dtype=embed_dtype)
         # [SIDA--]
 
-        if self.use_depth_align and self.align_type == "query":
+        if (self.use_depth_align or self.enable_gaussian_3d) and self.align_type == "query":
+            align_embs = None
+            align_pad_masks = None
+            fake_align_ids = None
             def _get_align_tokens(tokens):
                 tk_weights = tokens.view(self.num_task_tokens, tokens.shape[0] // self.num_task_tokens, tokens.shape[1])
                 tk_weights = tk_weights.mean(dim=1)
                 return tk_weights
 
-            align_pad_masks = torch.ones(
-                bsize,
-                self.num_task_tokens,
-                device=device,
-                dtype=lang_masks.dtype
-            )
-            fake_align_ids = torch.full(
-                (bsize, self.num_task_tokens),
-                cfg.text_config.eos_token_id,
-                dtype=torch.long,
-                device=device
-            )
-
-            current_task = _get_align_tokens(self.depth_align_embs)
-            if (
-                getattr(self, "use_future_video", False)
-                and getattr(self, "use_current_video_patch", False)
-                and getattr(self, "use_current_shared_task_proj", False)
-            ):
-                current_video_task = _get_align_tokens(self.current_video_align_embs)
-                current_task = self.current_shared_task_proj(
-                    torch.cat([current_task, current_video_task], dim=-1)
+            if self.use_depth_align:
+                align_pad_masks = torch.ones(
+                    bsize, self.num_task_tokens, device=device, dtype=lang_masks.dtype
                 )
-            align_embs = current_task.repeat(img_emb.size(0), 1, 1).to(img_emb.device, img_emb.dtype)
+                fake_align_ids = torch.full(
+                    (bsize, self.num_task_tokens), cfg.text_config.eos_token_id,
+                    dtype=torch.long, device=device
+                )
+                current_task = _get_align_tokens(self.depth_align_embs)
+                if (
+                    getattr(self, "use_future_video", False)
+                    and getattr(self, "use_current_video_patch", False)
+                    and getattr(self, "use_current_shared_task_proj", False)
+                ):
+                    current_video_task = _get_align_tokens(self.current_video_align_embs)
+                    current_task = self.current_shared_task_proj(
+                        torch.cat([current_task, current_video_task], dim=-1)
+                    )
+                align_embs = current_task.repeat(img_emb.size(0), 1, 1).to(img_emb.device, img_emb.dtype)
             parts = [img_emb]
             masks = [image_pad_masks]
             input_ids = [fake_image_ids]
@@ -738,7 +744,7 @@ class FlowMatchingV2(FlowMatchingV1):
                 )
 
             for segment_name in prefix_query_segments(
-                use_depth_align=True,
+                use_depth_align=self.use_depth_align,
                 use_future_depth=self.use_future_depth,
                 use_future_video=getattr(self, "use_future_video", False),
                 use_future_video_cls=getattr(self, "use_future_video_cls", False),
@@ -855,7 +861,7 @@ class FlowMatchingV2(FlowMatchingV1):
         query_spans = prefix_query_token_spans(
             prefix_len=hidden_states.shape[1],
             num_task_tokens=self.num_task_tokens,
-            use_depth_align=True,
+            use_depth_align=getattr(self, "use_depth_align", False),
             use_future_depth=getattr(self, "use_future_depth", False),
             use_future_video=getattr(self, "use_future_video", False),
             use_future_video_cls=getattr(self, "use_future_video_cls", False),
@@ -878,7 +884,7 @@ class FlowMatchingV2(FlowMatchingV1):
         query_spans = prefix_query_token_spans(
             prefix_len=hidden_states.shape[1],
             num_task_tokens=self.num_task_tokens,
-            use_depth_align=True,
+            use_depth_align=getattr(self, "use_depth_align", False),
             use_future_depth=getattr(self, "use_future_depth", False),
             use_future_video=getattr(self, "use_future_video", False),
             use_future_video_cls=getattr(self, "use_future_video_cls", False),
@@ -1028,7 +1034,7 @@ class FlowMatchingV2(FlowMatchingV1):
             render_target_images=render_target_images,
         )
         align_metrics = {}
-        if self.config.align_params != {}:
+        if self.use_depth_align:
             loss_depth, loss_future_depth, depth_preds, future_depth_preds = self.depth_emb_forward(outputs_embeds, depth_targets, img_masks,future_depth_targets,)
             loss_depth = loss_depth * self.config.align_params["depth_loss_weight"]
             loss_future_depth = loss_future_depth * self.config.align_params.get("future_depth_loss_weight", 1.0)

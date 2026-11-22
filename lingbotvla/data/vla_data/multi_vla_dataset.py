@@ -5,7 +5,11 @@ import torch
 try:
     from lerobot.common.constants import HF_LEROBOT_HOME
 except ImportError:
-    from lerobot.utils.constants import HF_LEROBOT_HOME
+    try:
+        from lerobot.utils.constants import HF_LEROBOT_HOME
+    except ImportError:
+        # LeRobot 0.3+ exposes the cache constant with the dataset module.
+        from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from torchvision.transforms.v2 import Resize
 import torch.nn.functional as F
 from tqdm import tqdm

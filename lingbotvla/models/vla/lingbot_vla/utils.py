@@ -111,14 +111,14 @@ def prefix_query_segments(
     the tail span.
     """
     segments = ["language"]
-    if not use_depth_align:
-        return tuple(segments)
-
-    segments.append("current_depth")
+    if use_depth_align:
+        segments.append("current_depth")
     # [SIDA++] add by SidaZhu for the 3D prefix bookkeeping segment
     if use_gs_3d:
         segments.append("gs_3d")
     # [SIDA--]
+    if not use_depth_align:
+        return tuple(segments)
     if use_future_video:
         if use_future_video_cls:
             segments.append("future_video_cls")

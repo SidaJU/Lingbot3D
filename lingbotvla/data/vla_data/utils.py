@@ -106,6 +106,12 @@ class FeatureTransform:
         # disabled_image_features: keep the image features or not when getting lerobot item
         self.disabled_image_features = disabled_image_features
         self.use_depth_align = use_depth_align
+        # [SIDA++] Preserve raw RGB views for the Gaussian/VGGT branch even
+        # when the existing depth teacher is disabled.
+        self.need_raw_rgb = bool(
+            self.use_depth_align or getattr(self.model_config, "enable_gaussian_3d", False)
+        )
+        # [SIDA--]
         self.use_future_image = use_future_image
 
         if not disabled_image_features:
@@ -420,7 +426,7 @@ class FeatureTransform:
                 batch_dict,
                 image_keys=self.feature_config.images,
                 train=self.image_augment and not policy_eval,
-                use_depth_align=self.use_depth_align,
+                use_depth_align=self.need_raw_rgb,
                 return_image_grid_thw=return_image_grid_thw,
                 return_augment_params=True,
             )
@@ -430,7 +436,7 @@ class FeatureTransform:
                     self.processor.image_processor, future_obs,
                     image_keys=self.feature_config.images,
                     train=self.image_augment and not policy_eval,
-                    use_depth_align=self.use_depth_align,
+                    use_depth_align=self.need_raw_rgb,
                     return_image_grid_thw=False,
                     augment_params=image_augment_params,
                 )
@@ -487,7 +493,7 @@ class FeatureTransform:
         if image_grid_thw is not None:
             batch_dict['image_grid_thw'] = image_grid_thw
 
-        if self.use_depth_align: 
+        if self.need_raw_rgb:
             batch_dict['pil_images'] = pil_images
             if self.use_future_image:
                 #assert future_pil_images is not None and future_pil_images is not []:

@@ -49,10 +49,17 @@ def _read_matrix(group: h5py.Group, field_name: str, source: Path) -> np.ndarray
     if field_name not in group:
         raise KeyError(f"{source}: camera group {group.name} is missing {field_name}")
     array = np.asarray(group[field_name][()], dtype=np.float32)
-    if array.shape[-2:] not in ((3, 3), (4, 4)):
+    if array.shape[-2:] not in ((3, 3), (3, 4), (4, 4)):
         raise ValueError(f"{source}: {group.name}/{field_name} has invalid shape {array.shape}")
     if array.ndim not in (2, 3):
         raise ValueError(f"{source}: {group.name}/{field_name} must be [M,M] or [T,M,M], got {array.shape}")
+    # RoboTwin stores OpenCV extrinsics as [T,3,4]. Promote them to the
+    # homogeneous [T,4,4] convention consumed by the renderer.
+    if array.shape[-2:] == (3, 4):
+        padded = np.zeros(array.shape[:-2] + (4, 4), dtype=array.dtype)
+        padded[..., :3, :4] = array
+        padded[..., 3, 3] = 1.0
+        return padded
     return array
 
 

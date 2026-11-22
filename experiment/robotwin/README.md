@@ -96,6 +96,47 @@ Output:
 ${XDG_CACHE_HOME}/huggingface/lerobot/${repo_id}
 ```
 
+### 6.1 Preserve RoboTwin camera calibration for the 3D branch
+
+<!-- [SIDA++] add by SidaZhu for the separate Gaussian 3D sidecar extension.
+This section states its purpose and server execution contract. Original
+SidaZhu additions retain attribution and applicable rights subject to the
+repository license and third-party notices. -->
+
+The raw RoboTwin HDF5 observation tree contains `intrinsic_cv`, `extrinsic_cv`
+and `cam2world_gl` for each recorded camera. The official LeRobot converter
+does not copy these fields, so extract them before or alongside conversion.
+Run the two commands in the RoboTwin data environment with `h5py` and `Pillow`:
+
+```bash
+python experiment/robotwin/build_camera_episode_map.py \
+  --raw-root /path/to/RoboTwin/data/<task>/<setting>/data \
+  --processed-root /path/to/RoboTwin/policy/pi0/processed_data/<task-setting-num> \
+  --output /path/to/RoboTwin/camera_sidecars/episodes.json
+
+python experiment/robotwin/extract_camera_metadata.py \
+  --episode-map /path/to/RoboTwin/camera_sidecars/episodes.json \
+  --output-root /path/to/RoboTwin/camera_sidecars
+```
+
+The map explicitly verifies the official preprocessing rule (`T` raw frames
+become `T-1` training frames); the extractor writes one `*.camera.npz` per
+processed episode and a training-aligned `manifest.json`. No embodiment
+download is needed for this step. Set `data.camera_metadata_root` in the training YAML to
+the sidecar directory when the dataset loader should forward the per-frame
+matrices as `camera_intrinsics`, `camera_extrinsics` and `camera_cam2world`.
+For `data_name: multi`, place one generated sidecar directory (with its own
+`manifest.json`) under `camera_metadata_root/<LeRobot dataset directory name>`.
+The matrices remain optional until the Gaussian renderer is enabled.
+
+When `enable_gaussian_3d: true` and `gaussian_render_loss_weight > 0`, the
+post-VLM `gs_3d` span is decoded into world-space Gaussian means/scales/colors
+and rendered from `gaussian_render_view` (default `camera_top`). The first
+renderer is intentionally low resolution (`gaussian_render_size`) so a single
+GPU batch can be smoke-tested before replacing it with a fused rasterizer.
+
+<!-- [SIDA--] -->
+
 ---
 
 ## 7. Simulated Evaluation (Inference + RoboTwin Sim)

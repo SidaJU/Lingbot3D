@@ -40,6 +40,12 @@ from lingbotvla.models.vla.lingbot_vla.qwen2_action_expert import (
     Qwen2FusedExperts,
     FixQwen2RMSNorm,
 )
+from lingbotvla.models.vla.geometry import (
+    DifferentiableGaussianRenderer,
+    Gaussian3DPrefixAdapter,
+    GaussianParameterDecoder,
+    compute_rgb_render_loss,
+)
 
 try:
     from dinov3.hub.backbones import dinov3_vitb16
@@ -466,6 +472,16 @@ class FlowMatchingV2(FlowMatchingV1):
             if hasattr(config, name):
                 setattr(qwenvl_with_export_config, name, getattr(config, name))
         self.qwenvl_with_expert = QwenvlWithExpertV2Model(qwenvl_with_export_config, eval)
+        # [SIDA++] add by SidaZhu for VLM-only LoRA injection
+        if bool(getattr(self.config, "gaussian_enable_lora", False)):
+            from lingbotvla.models.vla.geometry.lora_setup import inject_vlm_lora
+
+            inject_vlm_lora(
+                self.qwenvl_with_expert,
+                rank=int(getattr(self.config, "gaussian_lora_rank", 8)),
+                alpha=int(getattr(self.config, "gaussian_lora_alpha", 16)),
+            )
+        # [SIDA--]
         self.config.proj_width = qwenvl_with_export_config.qwen_expert_config.hidden_size
         self.config.initializer_range = getattr(qwenvl_with_export_config.qwen_expert_config, "initializer_range", None)
 
@@ -474,6 +490,43 @@ class FlowMatchingV2(FlowMatchingV1):
         self.action_out_proj = nn.Linear(self.config.proj_width, self.config.max_action_dim)
         self.action_time_mlp_in = nn.Linear(self.config.proj_width * 2, self.config.proj_width)
         self.action_time_mlp_out = nn.Linear(self.config.proj_width, self.config.proj_width)
+
+        # [SIDA++] add by SidaZhu for freezing action-side projections in LoRA mode
+        if bool(getattr(self.config, "gaussian_enable_lora", False)):
+            for module in (
+                self.state_proj,
+                self.action_in_proj,
+                self.action_out_proj,
+                self.action_time_mlp_in,
+                self.action_time_mlp_out,
+            ):
+                module.requires_grad_(False)
+        # [SIDA--]
+
+        # [SIDA++] add by SidaZhu for the single-step Gaussian 3D prefix adapter
+        self.enable_gaussian_3d = bool(getattr(self.config, "enable_gaussian_3d", False))
+        self.gaussian_num_tokens = int(getattr(self.config, "gaussian_num_tokens", 256))
+        if self.enable_gaussian_3d:
+            vlm_hidden_size = int(self.qwenvl_with_expert.qwenvl.config.text_config.hidden_size)
+            self.gaussian_3d_adapter = Gaussian3DPrefixAdapter(
+                feature_dim=vlm_hidden_size,
+                adapter_dim=int(getattr(self.config, "gaussian_adapter_dim", 512)),
+                num_tokens=self.gaussian_num_tokens,
+                llm_dim=vlm_hidden_size,
+                num_heads=int(getattr(self.config, "gaussian_adapter_heads", 8)),
+            )
+            self.gaussian_decoder = GaussianParameterDecoder(
+                hidden_dim=vlm_hidden_size,
+                num_gaussians=self.gaussian_num_tokens,
+            )
+            self.gaussian_renderer = DifferentiableGaussianRenderer(
+                render_size=int(getattr(self.config, "gaussian_render_size", 64)),
+            )
+        else:
+            self.gaussian_3d_adapter = None
+            self.gaussian_decoder = None
+            self.gaussian_renderer = None
+        # [SIDA--]
 
         self.config.align_params = getattr(self.config, "align_params", None) or {}
         if self.config.align_params != {}:
@@ -493,6 +546,13 @@ class FlowMatchingV2(FlowMatchingV1):
             self.use_shared_future_task_proj = False
             self.future_video_share_future_depth_query = False
             self.block_future_depth_to_action = False
+
+        # [SIDA++] add by SidaZhu for an explicit 3D prefix compatibility guard
+        if self.enable_gaussian_3d and not (self.use_depth_align and self.align_type == "query"):
+            raise ValueError(
+                "enable_gaussian_3d requires align_params.mode='query' so the gs_3d prefix span is materialized."
+            )
+        # [SIDA--]
 
         self.set_requires_grad()
 
@@ -579,6 +639,14 @@ class FlowMatchingV2(FlowMatchingV1):
 
         lang_emb = self.qwenvl_with_expert.embed_language_tokens(lang_tokens).to(dtype=embed_dtype)
 
+        # [SIDA++] add by SidaZhu for single-step 3D prefix token generation
+        gaussian_3d_tokens = None
+        if self.enable_gaussian_3d:
+            if self.gaussian_3d_adapter is None:
+                raise RuntimeError("Gaussian 3D is enabled but its adapter was not initialized")
+            gaussian_3d_tokens = self.gaussian_3d_adapter(img_emb).to(dtype=embed_dtype)
+        # [SIDA--]
+
         if self.use_depth_align and self.align_type == "query":
             def _get_align_tokens(tokens):
                 tk_weights = tokens.view(self.num_task_tokens, tokens.shape[0] // self.num_task_tokens, tokens.shape[1])
@@ -662,6 +730,7 @@ class FlowMatchingV2(FlowMatchingV1):
                     "future_video_share_future_depth_query",
                     False,
                 ),
+                use_gs_3d=self.enable_gaussian_3d,
             ):
                 if segment_name == "language":
                     _append(
@@ -671,6 +740,24 @@ class FlowMatchingV2(FlowMatchingV1):
                     )
                 elif segment_name == "current_depth":
                     _append(align_embs, align_pad_masks, fake_align_ids)
+                # [SIDA++] add by SidaZhu for synchronized 3D prefix metadata
+                elif segment_name == "gs_3d":
+                    if gaussian_3d_tokens is None:
+                        raise RuntimeError("gs_3d segment requested without generated 3D tokens")
+                    gs_pad_masks = torch.ones(
+                        bsize,
+                        self.gaussian_num_tokens,
+                        device=device,
+                        dtype=lang_masks.dtype,
+                    )
+                    gs_placeholder_ids = torch.full(
+                        (bsize, self.gaussian_num_tokens),
+                        cfg.text_config.eos_token_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    _append(gaussian_3d_tokens, gs_pad_masks, gs_placeholder_ids)
+                # [SIDA--]
                 elif segment_name == "future_video_cls":
                     future_video_cls_align_emb = self.future_video_cls_align_emb.weight.repeat(
                         img_emb.size(0), 1, 1
@@ -760,9 +847,79 @@ class FlowMatchingV2(FlowMatchingV1):
                 "future_video_share_future_depth_query",
                 False,
             ),
+            use_gs_3d=getattr(self, "enable_gaussian_3d", False),
+            num_gs_tokens=getattr(self, "gaussian_num_tokens", 0),
         )
         start, end = query_spans["current_depth"]
         return hidden_states[:, start:end, :]
+
+    # [SIDA++] add by SidaZhu for extracting the post-VLM 3D prefix hidden span
+    def _gaussian_3d_task_tokens(self, hidden_states):
+        if not getattr(self, "enable_gaussian_3d", False):
+            raise RuntimeError("Gaussian 3D prefix is disabled")
+        query_spans = prefix_query_token_spans(
+            prefix_len=hidden_states.shape[1],
+            num_task_tokens=self.num_task_tokens,
+            use_depth_align=True,
+            use_future_depth=getattr(self, "use_future_depth", False),
+            use_future_video=getattr(self, "use_future_video", False),
+            use_future_video_cls=getattr(self, "use_future_video_cls", False),
+            use_future_video_patch=getattr(self, "use_future_video_patch", True),
+            future_video_share_future_depth_query=getattr(
+                self, "future_video_share_future_depth_query", False
+            ),
+            use_gs_3d=True,
+            num_gs_tokens=self.gaussian_num_tokens,
+        )
+        start, end = query_spans["gs_3d"]
+        return hidden_states[:, start:end, :]
+    # [SIDA--]
+
+    # [SIDA++] add by SidaZhu for Gaussian token decode and RGB render loss
+    def _gaussian_rgb_render_loss(
+        self,
+        hidden_states,
+        camera_intrinsics=None,
+        camera_extrinsics=None,
+        render_target_images=None,
+    ):
+        weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
+        if not self.enable_gaussian_3d or weight <= 0.0:
+            return hidden_states.new_zeros(())
+        if camera_intrinsics is None or camera_extrinsics is None or render_target_images is None:
+            raise ValueError(
+                "Gaussian RGB loss requires camera_intrinsics, camera_extrinsics, and render_target_images"
+            )
+        if self.gaussian_decoder is None or self.gaussian_renderer is None:
+            raise RuntimeError("Gaussian renderer is enabled but decoder/renderer is missing")
+        if render_target_images.ndim == 4:
+            render_target_images = render_target_images.unsqueeze(1)
+        if render_target_images.ndim != 5:
+            raise ValueError(f"render_target_images must be [B,V,C,H,W], got {tuple(render_target_images.shape)}")
+        view_name = str(getattr(self.config, "gaussian_render_view", "camera_top"))
+        view_index = {"camera_top": 0, "camera_wrist_left": 1, "camera_wrist_right": 2}.get(view_name)
+        if view_index is None:
+            raise ValueError(f"Unsupported Gaussian render view: {view_name}")
+        if view_index >= render_target_images.shape[1]:
+            raise ValueError(f"Render view {view_name} is absent from target images")
+        tokens = self._gaussian_3d_task_tokens(hidden_states)
+        gaussian_params = self.gaussian_decoder(tokens)
+        target = render_target_images[:, view_index].float().to(hidden_states.device)
+        if target.shape[1] != 3:
+            raise ValueError(f"render target must have 3 channels, got {target.shape[1]}")
+        if target.detach().amax() > 1.5:
+            target = target / 255.0
+        target_hw = (target.shape[-2], target.shape[-1])
+        rendered = self.gaussian_renderer(
+            gaussian_params,
+            camera_intrinsics,
+            camera_extrinsics,
+            target_hw=target_hw,
+            view_index=view_index,
+        )
+        target = F.interpolate(target, size=rendered.shape[-2:], mode="bilinear", align_corners=False)
+        return weight * compute_rgb_render_loss(rendered, target)
+    # [SIDA--]
 
     def forward(
         self,
@@ -781,6 +938,9 @@ class FlowMatchingV2(FlowMatchingV1):
         future_video_targets=None,
         future_video_cls_targets=None,
         future_video_current_patch=None,
+        camera_intrinsics=None,
+        camera_extrinsics=None,
+        render_target_images=None,
     ) -> Tensor:
         dtype = state.dtype
         device = state.device
@@ -841,6 +1001,12 @@ class FlowMatchingV2(FlowMatchingV1):
             ada_cond=time_embs if getattr(self.config, "adanorm_time", False) else None,
             visual_pos_masks=visual_pos_masks,
             deepstack_visual_embeds=deepstack_visual_embeds,
+        )
+        loss_gaussian = self._gaussian_rgb_render_loss(
+            outputs_embeds,
+            camera_intrinsics=camera_intrinsics,
+            camera_extrinsics=camera_extrinsics,
+            render_target_images=render_target_images,
         )
         align_metrics = {}
         if self.config.align_params != {}:
@@ -913,9 +1079,10 @@ class FlowMatchingV2(FlowMatchingV1):
         seq_wise_loss, router_z_loss, moe_metrics = self._moe_losses_and_metrics(
             router_logits_list, losses
         )
+        moe_metrics["gaussian_render_loss"] = loss_gaussian.detach()
         if align_metrics:
             moe_metrics.update(align_metrics)
-        return losses, loss_depth, loss_future_depth, loss_future_video, depth_preds, seq_wise_loss, router_z_loss, moe_metrics, future_depth_preds, future_video_preds, current_video_preds
+        return losses, loss_depth, loss_future_depth, loss_future_video, loss_gaussian, depth_preds, seq_wise_loss, router_z_loss, moe_metrics, future_depth_preds, future_video_preds, current_video_preds
 
     def sample_actions(
         self,
@@ -1251,6 +1418,9 @@ class LingbotVlaV2Policy(PreTrainedModel):
         future_video_targets=None,
         future_video_cls_targets=None,
         future_video_current_patch=None,
+        camera_intrinsics=None,
+        camera_extrinsics=None,
+        render_target_images=None,
         **kwargs
     ) -> tuple[Tensor, dict[str, Tensor]]:
         loss_dict = {}
@@ -1262,6 +1432,7 @@ class LingbotVlaV2Policy(PreTrainedModel):
             loss_depth,
             loss_future_depth,
             loss_future_video,
+            loss_gaussian,
             depth_preds,
             seq_wise_loss,
             router_z_loss,
@@ -1285,6 +1456,9 @@ class LingbotVlaV2Policy(PreTrainedModel):
             future_video_targets=future_video_targets,
             future_video_cls_targets=future_video_cls_targets,
             future_video_current_patch=future_video_current_patch,
+            camera_intrinsics=camera_intrinsics,
+            camera_extrinsics=camera_extrinsics,
+            render_target_images=render_target_images,
         )
 
         if joint_mask is not None:
@@ -1307,10 +1481,12 @@ class LingbotVlaV2Policy(PreTrainedModel):
             + loss_depth
             + loss_future_depth
             + loss_future_video
+            + loss_gaussian
             + seq_wise_loss
             + router_z_loss
         )
         loss_dict["router_z_loss"] = router_z_loss.detach() if torch.is_tensor(router_z_loss) else router_z_loss
+        loss_dict["gaussian_render_loss"] = loss_gaussian.detach()
         if moe_metrics:
             loss_dict.update(moe_metrics)
         return total_loss, loss_vla, loss_depth, loss_future_depth, loss_future_video, seq_wise_loss, loss_dict, depth_preds, future_depth_preds, future_video_preds, current_video_preds

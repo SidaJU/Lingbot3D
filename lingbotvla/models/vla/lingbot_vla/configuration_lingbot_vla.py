@@ -93,6 +93,20 @@ class LingbotVLAConfig(PretrainedConfig):
         train_expert_only: bool = False,
         train_state_proj: bool = True,
 
+        # [SIDA++] add by SidaZhu for the optional Gaussian 3D prefix branch
+        enable_gaussian_3d: bool = False,
+        gaussian_num_tokens: int = 256,
+        gaussian_adapter_dim: int = 512,
+        gaussian_adapter_heads: int = 8,
+        gaussian_render_loss_weight: float = 0.0,
+        gaussian_render_size: int = 64,
+        gaussian_camera_config: Optional[str] = None,
+        gaussian_render_view: str = "camera_top",
+        gaussian_enable_lora: bool = False,
+        gaussian_lora_rank: int = 8,
+        gaussian_lora_alpha: int = 16,
+        # [SIDA--]
+
         **kwargs
     ):
         super().__init__()
@@ -100,6 +114,19 @@ class LingbotVLAConfig(PretrainedConfig):
             moe_implementation = kwargs.pop("_moe_implementation", None)
         self.architectures = ["LingbotVlaPolicy"]
         self.train_state_proj = train_state_proj
+        # [SIDA++] add by SidaZhu for Gaussian 3D configuration
+        self.enable_gaussian_3d = enable_gaussian_3d
+        self.gaussian_num_tokens = gaussian_num_tokens
+        self.gaussian_adapter_dim = gaussian_adapter_dim
+        self.gaussian_adapter_heads = gaussian_adapter_heads
+        self.gaussian_render_loss_weight = gaussian_render_loss_weight
+        self.gaussian_render_size = gaussian_render_size
+        self.gaussian_camera_config = gaussian_camera_config
+        self.gaussian_render_view = gaussian_render_view
+        self.gaussian_enable_lora = gaussian_enable_lora
+        self.gaussian_lora_rank = gaussian_lora_rank
+        self.gaussian_lora_alpha = gaussian_lora_alpha
+        # [SIDA--]
         self.train_expert_only = train_expert_only
         self.use_cache = False
         self.attention_implementation = attention_implementation

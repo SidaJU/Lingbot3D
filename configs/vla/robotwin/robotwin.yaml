@@ -19,6 +19,9 @@ data:
     - camera_top
     - camera_wrist_left
     - camera_wrist_right
+  # [SIDA++] add by SidaZhu for optional raw RoboTwin camera K/T sidecars
+  camera_metadata_root: null
+  # [SIDA--]
   norm_type:
     - arm.position: bounds_99_woclip
     - end.position: bounds_99_woclip
@@ -138,3 +141,16 @@ train:
       log_max_samples: 32
       log_scale: 16
     visual_steps: 5000
+  # [SIDA++] add by SidaZhu for the staged Gaussian 3D branch
+  enable_gaussian_3d: false
+  gaussian_num_tokens: 256
+  gaussian_adapter_dim: 512
+  gaussian_adapter_heads: 8
+  gaussian_render_loss_weight: 0.0
+  gaussian_render_size: 64
+  gaussian_camera_config: ./configs/robot_configs/robotwin_camera.json
+  gaussian_render_view: camera_top
+  gaussian_enable_lora: false
+  gaussian_lora_rank: 8
+  gaussian_lora_alpha: 16
+  # [SIDA--]

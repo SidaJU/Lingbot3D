@@ -477,6 +477,13 @@ class FeatureTransform:
                 'state_joint_mask': state_joint_mask,
                 'action_joint_mask': action_joint_mask,
             }
+        # [SIDA++] add by SidaZhu for forwarding optional RoboTwin camera K/T
+        # metadata alongside the normal VLA batch.  The model can ignore these
+        # keys until the Gaussian renderer consumes them.
+        for camera_key in ('camera_intrinsics', 'camera_extrinsics', 'camera_cam2world', 'camera_valid_mask'):
+            if camera_key in item:
+                batch_dict[camera_key] = item[camera_key]
+        # [SIDA--]
         if image_grid_thw is not None:
             batch_dict['image_grid_thw'] = image_grid_thw
 

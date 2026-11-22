@@ -1,0 +1,17 @@
+{
+  "extension_owner": "SidaZhu",
+  "extension_scope": "LingBot Gaussian 3D camera sidecar and renderer configuration; separate from LingBot official code",
+  "rights_notice": "Original SidaZhu additions retain attribution and applicable rights subject to the repository license and third-party notices",
+  "purpose": "Describe verified RoboTwin camera conventions and sidecar formats without guessing static embodiment poses",
+  "status": "verified_source_sidecar_pending_static_fallback",
+  "source_repo": "https://github.com/RoboTwin-Platform/RoboTwin.git",
+  "source_commit": "13c3c47ff4312dd62484bcd51be034af55c062d1",
+  "coordinate_convention": "T_world_cam maps world coordinates into camera coordinates",
+  "static_views": ["camera_top"],
+  "dynamic_views": ["camera_wrist_left", "camera_wrist_right"],
+  "intrinsics_source": "RoboTwin task_config/_camera_config.yml and SAPIEN get_intrinsic_matrix()",
+  "metadata_sidecar_format": "lingbot.robottwin.camera.v1",
+  "metadata_manifest_format": "lingbot.robottwin.camera.manifest.v1",
+  "static_pose_fallback": "not populated; use per-frame extrinsic_cv from raw HDF5 sidecar",
+  "cameras": {}
+}

@@ -101,6 +101,7 @@ def prefix_query_segments(
     use_future_video_cls=False,
     use_future_video_patch=True,
     future_video_share_future_depth_query=False,
+    use_gs_3d=False,
 ):
     """Return prefix segment order after the image block.
 
@@ -114,6 +115,10 @@ def prefix_query_segments(
         return tuple(segments)
 
     segments.append("current_depth")
+    # [SIDA++] add by SidaZhu for the 3D prefix bookkeeping segment
+    if use_gs_3d:
+        segments.append("gs_3d")
+    # [SIDA--]
     if use_future_video:
         if use_future_video_cls:
             segments.append("future_video_cls")
@@ -133,10 +138,15 @@ def prefix_query_token_spans(
     use_future_video_cls=False,
     use_future_video_patch=True,
     future_video_share_future_depth_query=False,
+    use_gs_3d=False,
+    num_gs_tokens=0,
 ):
     """Return [start, end) spans for non-language task query segments."""
     counts = {
         "current_depth": num_task_tokens,
+        # [SIDA++] add by SidaZhu for the 3D prefix hidden span
+        "gs_3d": num_gs_tokens,
+        # [SIDA--]
         "future_video_cls": 1,
         "future_video": num_task_tokens,
         "future_depth": num_task_tokens,
@@ -148,6 +158,7 @@ def prefix_query_token_spans(
         use_future_video_cls=use_future_video_cls,
         use_future_video_patch=use_future_video_patch,
         future_video_share_future_depth_query=future_video_share_future_depth_query,
+        use_gs_3d=use_gs_3d,
     )
     query_segments = [name for name in ordered if name != "language"]
     cursor = prefix_len - sum(counts[name] for name in query_segments)

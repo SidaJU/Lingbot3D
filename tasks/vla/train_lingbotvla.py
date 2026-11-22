@@ -753,6 +753,9 @@ def main():
                 future_video_current_preds = None
                 future_video_cls_targets = None
                 future_video_current_dino = None
+                # [SIDA++] add by SidaZhu for Gaussian RGB reconstruction target
+                render_target_images = None
+                # [SIDA--]
                 dataset_names = micro_batch.pop('rep_id', None)
                 environ_meter.add(micro_batch)
                 micro_batch = {
@@ -764,6 +767,9 @@ def main():
                     with torch.no_grad():
                         depth_start_time = time.time()
                         pil_images = micro_batch.pop('pil_images', None)
+                        # [SIDA++] add by SidaZhu for forwarding raw RGB to the Gaussian renderer
+                        render_target_images = pil_images
+                        # [SIDA--]
                         future_pil_images = micro_batch.pop('future_pil_images', None) if (use_future_depth or use_future_video) else None
                         with torch.autocast("cuda", dtype=torch.bfloat16):
                             depth_targets, cls_token = get_depth_target(depth_model_type, (moge_model, morgbd_model), pil_images)
@@ -798,6 +804,7 @@ def main():
                         future_video_targets=future_video_targets,
                         future_video_cls_targets=future_video_cls_targets,
                         future_video_current_patch=future_video_current_dino,
+                        render_target_images=render_target_images,
                     )
                     if len(model_outputs) == 6:
                         loss, vla_loss, depth_loss, seq_wise_loss, loss_log, depth_preds = model_outputs

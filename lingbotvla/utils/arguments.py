@@ -184,6 +184,17 @@ class DataArguments:
         default=None,
         metadata={"help": "Root path of datasets."},
     )
+    # [SIDA++] add by SidaZhu for optional RoboTwin camera metadata sidecars
+    camera_metadata_root: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "Directory containing camera sidecar manifest.json files generated from raw RoboTwin HDF5. "
+                "Leave unset to keep the original LeRobot-only data path."
+            )
+        },
+    )
+    # [SIDA--]
     data_tag: Literal["default", "mmtag"] = field(
         default="default",
         metadata={"help": "Dataset tag for multimodal training."},

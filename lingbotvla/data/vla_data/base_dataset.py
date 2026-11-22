@@ -17,6 +17,9 @@ import os
 import inspect
 from pathlib import Path
 
+# [SIDA++] add by SidaZhu for stacking camera metadata
+import numpy as np
+# [SIDA--]
 import torch
 from torch.utils.data import Dataset
 from torchvision.transforms.v2 import Resize
@@ -212,6 +215,21 @@ class VLADataset(Dataset):
             load_image=load_image
         )
 
+        # [SIDA++] add by SidaZhu for preserving per-frame RoboTwin K/T metadata
+        metadata_root = getattr(dataset_config, "camera_metadata_root", None)
+        self.camera_metadata_index = None
+        if metadata_root:
+            from ...models.vla.geometry.camera_metadata import CameraMetadataIndex, resolve_camera_metadata_root
+
+            metadata_root = resolve_camera_metadata_root(metadata_root, repo_id)
+            self.camera_metadata_index = CameraMetadataIndex(metadata_root)
+            self._camera_image_hw = tuple(image_size)
+            self._camera_names = [key.rsplit('.', 1)[-1] for key in self.feature_transform.feature_config.images]
+            self.feature_transform.feature_to_keep.update(
+                {"camera_intrinsics", "camera_extrinsics", "camera_cam2world", "camera_valid_mask"}
+            )
+        # [SIDA--]
+
         self.return_item = return_item
         self.transform = transform
 
@@ -267,6 +285,27 @@ class VLADataset(Dataset):
 
     def getitem(self, idx):
         raw_item = self.check_lerobot_item(self.dataset[idx])
+        # [SIDA++] add by SidaZhu for optional per-frame camera metadata
+        if self.camera_metadata_index is not None:
+            episode_index = int(torch.as_tensor(raw_item["episode_index"]).reshape(-1)[0].item())
+            frame_index = int(torch.as_tensor(raw_item["frame_index"]).reshape(-1)[0].item())
+            matrices = [
+                self.camera_metadata_index.for_resized_frame(
+                    episode_index, frame_index, camera_name, self._camera_image_hw
+                )
+                for camera_name in self._camera_names
+            ]
+            raw_item["camera_intrinsics"] = torch.from_numpy(
+                np.stack([matrix["intrinsic_cv"] for matrix in matrices])
+            )
+            raw_item["camera_extrinsics"] = torch.from_numpy(
+                np.stack([matrix["world_to_cam"] for matrix in matrices])
+            )
+            raw_item["camera_cam2world"] = torch.from_numpy(
+                np.stack([matrix["cam2world_gl"] for matrix in matrices])
+            )
+            raw_item["camera_valid_mask"] = torch.ones(len(matrices), dtype=torch.bool)
+        # [SIDA--]
         if (
             self.use_future_image
             and "future_video_effective_fps" not in raw_item

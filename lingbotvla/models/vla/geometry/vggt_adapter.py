@@ -85,7 +85,8 @@ class VGGTFeatureEncoder(nn.Module):
         patch_proj = getattr(patch_embed, "proj", None)
         if patch_proj is None:
             patch_proj = patch_embed.patch_embed.proj
-        images = images.to(device=patch_proj.weight.device, dtype=patch_proj.weight.dtype)
+        patch_dtype = patch_proj.bias.dtype if patch_proj.bias is not None else patch_proj.weight.dtype
+        images = images.to(device=patch_proj.weight.device, dtype=patch_dtype)
         context = torch.no_grad() if not self.training or not any(p.requires_grad for p in self.parameters()) else torch.enable_grad()
         with context:
             outputs = self.encoder(images)

@@ -81,8 +81,8 @@ class VGGTFeatureEncoder(nn.Module):
         # training launcher. Match the input dtype to the encoder parameters;
         # feeding FP32 images into a BF16 patch-embed convolution fails before
         # the Gaussian branch can produce tokens.
-        encoder_param = next(self.encoder.parameters())
-        images = images.to(device=encoder_param.device, dtype=encoder_param.dtype)
+        patch_proj = self.encoder.aggregator.patch_embed.proj
+        images = images.to(device=patch_proj.weight.device, dtype=patch_proj.weight.dtype)
         context = torch.no_grad() if not self.training or not any(p.requires_grad for p in self.parameters()) else torch.enable_grad()
         with context:
             outputs = self.encoder(images)

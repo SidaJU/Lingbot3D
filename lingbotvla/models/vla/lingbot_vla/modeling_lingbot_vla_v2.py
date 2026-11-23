@@ -1151,6 +1151,16 @@ class FlowMatchingV2(FlowMatchingV1):
             router_logits_list, losses
         )
         moe_metrics["gaussian_render_loss"] = loss_gaussian.detach()
+        # [SIDA++] Keep the unweighted RGB reconstruction term available for
+        # persistent training diagnostics. ``gaussian_render_loss`` remains
+        # the weighted contribution used by the total objective.
+        gaussian_weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
+        if gaussian_weight > 0.0:
+            moe_metrics["gaussian_render_loss_raw"] = (
+                loss_gaussian.detach() / gaussian_weight
+            )
+        else:
+            moe_metrics["gaussian_render_loss_raw"] = loss_gaussian.detach()
         if align_metrics:
             moe_metrics.update(align_metrics)
         return losses, loss_depth, loss_future_depth, loss_future_video, loss_gaussian, depth_preds, seq_wise_loss, router_z_loss, moe_metrics, future_depth_preds, future_video_preds, current_video_preds

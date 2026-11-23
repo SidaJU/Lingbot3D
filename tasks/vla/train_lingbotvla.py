@@ -763,6 +763,11 @@ def main():
                 helper.print_example(example=micro_batches[0], rank=args.train.local_rank)
 
             total_loss, total_vla_loss, total_depth_loss, total_future_depth_loss, total_future_video_loss, total_seq_wise_loss, total_router_z_loss = 0, 0, 0, 0, 0, 0, 0
+            # [SIDA++] Keep Gaussian RGB supervision separate from the
+            # aggregate loss. The weighted value is the term added to the
+            # objective; the raw value is the renderer loss before weighting.
+            total_gaussian_render_loss = 0.0
+            total_gaussian_render_loss_raw = 0.0
             depth_targets, depth_preds = None, None
             future_depth_targets, future_depth_preds = None, None
             future_video_targets, future_video_preds = None, None
@@ -859,6 +864,8 @@ def main():
                     future_video_loss = future_video_loss / len(micro_batches)
                     seq_wise_loss = seq_wise_loss / len(micro_batches)
                     router_z_loss = loss_log.get("router_z_loss", loss_log.get("moe_zloss/weighted", 0))
+                    gaussian_render_loss = loss_log.get("gaussian_render_loss", 0.0)
+                    gaussian_render_loss_raw = loss_log.get("gaussian_render_loss_raw", gaussian_render_loss)
                     avg_lang_length = micro_batch['lang_masks'].sum(dim=-1).float().mean()
 
                 with model_bwd_context:
@@ -876,6 +883,14 @@ def main():
                     total_seq_wise_loss += seq_wise_loss.item()
                 if not (isinstance(router_z_loss, int) or isinstance(router_z_loss, float)):
                     total_router_z_loss += router_z_loss.item() / len(micro_batches)
+                if torch.is_tensor(gaussian_render_loss):
+                    total_gaussian_render_loss += gaussian_render_loss.detach().item() / len(micro_batches)
+                else:
+                    total_gaussian_render_loss += float(gaussian_render_loss) / len(micro_batches)
+                if torch.is_tensor(gaussian_render_loss_raw):
+                    total_gaussian_render_loss_raw += gaussian_render_loss_raw.detach().item() / len(micro_batches)
+                else:
+                    total_gaussian_render_loss_raw += float(gaussian_render_loss_raw) / len(micro_batches)
                 del micro_batch
             # --- TEMP gate-gradient probe (GATE_GRAD_PROBE=1): dump router gate grad
             # magnitude vs routed-expert grad, plus per-expert symmetry, pre-clip. ---
@@ -929,7 +944,7 @@ def main():
                 grad_norm = grad_norm.full_tensor().item()
 
             # collect mean loss across data parallel group
-            total_loss, total_vla_loss, total_depth_loss, total_future_depth_loss, total_future_video_loss, total_seq_wise_loss, total_router_z_loss, avg_lang_length, grad_norm = all_reduce((total_loss, total_vla_loss, total_depth_loss, total_future_depth_loss, total_future_video_loss, total_seq_wise_loss, total_router_z_loss, avg_lang_length, grad_norm), group=get_parallel_state().fsdp_group)
+            total_loss, total_vla_loss, total_depth_loss, total_future_depth_loss, total_future_video_loss, total_seq_wise_loss, total_router_z_loss, total_gaussian_render_loss, total_gaussian_render_loss_raw, avg_lang_length, grad_norm = all_reduce((total_loss, total_vla_loss, total_depth_loss, total_future_depth_loss, total_future_video_loss, total_seq_wise_loss, total_router_z_loss, total_gaussian_render_loss, total_gaussian_render_loss_raw, avg_lang_length, grad_norm), group=get_parallel_state().fsdp_group)
             total_depth_loss = total_depth_loss / depth_loss_weight
             total_future_depth_loss = total_future_depth_loss / future_depth_loss_weight
             total_future_video_loss = total_future_video_loss / future_video_loss_weight
@@ -959,6 +974,8 @@ def main():
                 f"FutureVideo_Loss {total_future_video_loss:.4f}, "
                 f"SeqWise_Loss {total_seq_wise_loss:.4f}, "
                 f"RouterZ_Loss {total_router_z_loss:.4f}, "
+                f"GaussianRGB_Loss {total_gaussian_render_loss:.6f}, "
+                f"GaussianRGB_Raw {total_gaussian_render_loss_raw:.6f}, "
                 f"{maxvio_str}"
                 f"{sigmoid_str}"
                 f"GradNorm {grad_norm:.4f}, "
@@ -978,6 +995,26 @@ def main():
                 writer.add_scalar("training/future_video_loss", total_future_video_loss, global_step)
                 writer.add_scalar("training/sequence_wise_loss", total_seq_wise_loss, global_step)
                 writer.add_scalar("training/router_z_loss", total_router_z_loss, global_step)
+                # [SIDA++] Persistent TensorBoard scalars for the Gaussian
+                # RGB reconstruction term. Keep both weighted and raw forms.
+                writer.add_scalar("training/gaussian_render_loss", total_gaussian_render_loss, global_step)
+                writer.add_scalar("training/gaussian_render_loss_raw", total_gaussian_render_loss_raw, global_step)
+                gaussian_loss_record = {
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                    "gaussian_render_loss": total_gaussian_render_loss,
+                    "gaussian_render_loss_raw": total_gaussian_render_loss_raw,
+                    "gaussian_render_loss_weight": float(getattr(args.train, "gaussian_render_loss_weight", 0.0)),
+                }
+                gaussian_loss_path = os.path.join(
+                    args.train.save_checkpoint_path, "gaussian_render_loss.jsonl"
+                )
+                try:
+                    with open(gaussian_loss_path, "a", encoding="utf-8") as gaussian_loss_file:
+                        gaussian_loss_file.write(json.dumps(gaussian_loss_record) + "\n")
+                        gaussian_loss_file.flush()
+                except Exception as exc:
+                    logger.warning("Failed to persist Gaussian render loss: %s", exc)
                 # MoE monitoring metrics.
                 #   moe_summary/*            -> every step (cheap cross-layer health glance)
                 #   moe_<metric>/layerXX     -> every moe_monitor_interval steps (per-layer, downsampled)

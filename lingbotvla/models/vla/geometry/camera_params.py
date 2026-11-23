@@ -128,7 +128,7 @@ def get_camera_params_for_view(
     fov_y = 2.0 * math.atan(height / (2.0 * fy))
     projection = _projection_matrix(0.01, 100.0, fov_x, fov_y, device, dtype)
     projmatrix = torch.matmul(projection.unsqueeze(0).expand(batch_size, -1, -1), viewmatrix)
-    campos = torch.linalg.inv(viewmatrix)[:, :3, 3]
+    campos = torch.linalg.inv(viewmatrix.float()).to(dtype)[:, :3, 3]
 
     return {
         "intrinsics": intrinsics,

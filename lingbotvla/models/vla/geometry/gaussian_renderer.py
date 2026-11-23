@@ -73,7 +73,7 @@ class DifferentiableGaussianRenderer(nn.Module):
             projection[2, 3] = -(100.0 * 0.01) / 99.99
             projection[3, 2] = 1.0
             mvp = projection @ view
-            camera_position = torch.linalg.inv(view)[:3, 3]
+            camera_position = torch.linalg.inv(view.float()).to(dtype)[:3, 3]
             settings = GaussianRasterizationSettings(
                 image_height=self.render_size,
                 image_width=self.render_size,

@@ -135,7 +135,10 @@ class GaussianParameterDecoder(nn.Module):
             x = (u - k[:, None, 0, 2]) / k[:, None, 0, 0] * z
             y = (v - k[:, None, 1, 2]) / k[:, None, 1, 1] * z
             xyz_cam = torch.stack((x, y, z), dim=-1)
-            cam_to_world = torch.linalg.inv(t_world_cam)
+            # [SIDA++] PyTorch does not implement matrix inverse for BF16;
+            # keep camera calibration numerically stable in FP32 and cast the
+            # resulting transform back to the decoder dtype.
+            cam_to_world = torch.linalg.inv(t_world_cam.float()).to(decoder_dtype)
             means = torch.einsum("bij,bnj->bni", cam_to_world[:, :3, :3], xyz_cam)
             means = means + cam_to_world[:, None, :3, 3]
         else:

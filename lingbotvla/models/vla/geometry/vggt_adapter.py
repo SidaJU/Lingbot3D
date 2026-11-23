@@ -77,6 +77,12 @@ class VGGTFeatureEncoder(nn.Module):
             mode="bilinear",
             align_corners=False,
         ).reshape(batch, views, 3, self.image_size, self.image_size)
+        # [SIDA++] The frozen VGGT may be materialized in BF16 by the 6-GPU
+        # training launcher. Match the input dtype to the encoder parameters;
+        # feeding FP32 images into a BF16 patch-embed convolution fails before
+        # the Gaussian branch can produce tokens.
+        encoder_param = next(self.encoder.parameters())
+        images = images.to(device=encoder_param.device, dtype=encoder_param.dtype)
         context = torch.no_grad() if not self.training or not any(p.requires_grad for p in self.parameters()) else torch.enable_grad()
         with context:
             outputs = self.encoder(images)

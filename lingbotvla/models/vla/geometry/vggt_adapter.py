@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -88,7 +89,12 @@ class VGGTFeatureEncoder(nn.Module):
         patch_dtype = patch_proj.bias.dtype if patch_proj.bias is not None else patch_proj.weight.dtype
         images = images.to(device=patch_proj.weight.device, dtype=patch_dtype)
         context = torch.no_grad() if not self.training or not any(p.requires_grad for p in self.parameters()) else torch.enable_grad()
-        with context:
+        amp_context = (
+            torch.autocast(device_type=images.device.type, dtype=patch_dtype)
+            if images.is_cuda and patch_dtype in (torch.float16, torch.bfloat16)
+            else nullcontext()
+        )
+        with context, amp_context:
             outputs = self.encoder(images)
         features = outputs["features"]
         patch_start = int(outputs.get("patch_start_idx", getattr(self.encoder.aggregator, "patch_start_idx", 0)))

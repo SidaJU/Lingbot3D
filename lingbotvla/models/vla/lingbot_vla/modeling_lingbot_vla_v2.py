@@ -1,4 +1,5 @@
 import einops
+import os
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -927,13 +928,19 @@ class FlowMatchingV2(FlowMatchingV1):
         if view_index >= render_target_images.shape[1]:
             raise ValueError(f"Render view {view_name} is absent from target images")
         tokens = self._gaussian_3d_task_tokens(hidden_states)
-        gaussian_params = self.gaussian_decoder(tokens)
         target = render_target_images[:, view_index].float().to(hidden_states.device)
         if target.shape[1] != 3:
             raise ValueError(f"render target must have 3 channels, got {target.shape[1]}")
         if target.detach().amax() > 1.5:
             target = target / 255.0
         target_hw = (target.shape[-2], target.shape[-1])
+        gaussian_params = self.gaussian_decoder(
+            tokens,
+            intrinsics=camera_intrinsics,
+            world_to_cam=camera_extrinsics,
+            target_hw=target_hw,
+            view_index=view_index,
+        )
         rendered = self.gaussian_renderer(
             gaussian_params,
             camera_intrinsics,
@@ -942,7 +949,46 @@ class FlowMatchingV2(FlowMatchingV1):
             view_index=view_index,
         )
         target = F.interpolate(target, size=rendered.shape[-2:], mode="bilinear", align_corners=False)
-        return weight * compute_rgb_render_loss(rendered, target)
+        render_loss = compute_rgb_render_loss(rendered, target)
+
+        # [SIDA++] optional diagnostic for the first Gaussian integration stage.
+        # Enabled only with LINGBOT_GAUSSIAN_DEBUG=1; it records finite-value
+        # statistics and saves a rendered/target pair without changing defaults.
+        debug_enabled = os.environ.get("LINGBOT_GAUSSIAN_DEBUG", "0").lower() in {"1", "true", "yes"}
+        debug_index = int(getattr(self, "_gaussian_debug_index", 0))
+        debug_limit = int(os.environ.get("LINGBOT_GAUSSIAN_DEBUG_LIMIT", "3"))
+        if debug_enabled and debug_index < debug_limit and os.environ.get("RANK", "0") == "0":
+            def _stats(value):
+                value = value.detach().float()
+                return (
+                    f"shape={tuple(value.shape)} min={value.min().item():.6g} "
+                    f"max={value.max().item():.6g} mean={value.mean().item():.6g} "
+                    f"std={value.std().item():.6g} norm={value.norm().item():.6g} "
+                    f"nan={int(torch.isnan(value).any())} inf={int(torch.isinf(value).any())}"
+                )
+
+            logger.warning("[SIDA-GAUSSIAN-DEBUG] tokens: %s", _stats(tokens))
+            for name, value in vars(gaussian_params).items():
+                logger.warning("[SIDA-GAUSSIAN-DEBUG] gaussian.%s: %s", name, _stats(value))
+            logger.warning(
+                "[SIDA-GAUSSIAN-DEBUG] rendered: %s target: %s raw_loss=%.6g weighted_loss=%.6g",
+                _stats(rendered), _stats(target), render_loss.item(), (weight * render_loss).item(),
+            )
+            try:
+                from PIL import Image
+
+                debug_dir = os.environ.get("LINGBOT_GAUSSIAN_DEBUG_DIR", "./gaussian_debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                for name, image in (("rendered", rendered), ("target", target)):
+                    image_u8 = (
+                        image[0].detach().float().clamp(0.0, 1.0)
+                        .permute(1, 2, 0).mul(255.0).round().byte().cpu().numpy()
+                    )
+                    Image.fromarray(image_u8).save(os.path.join(debug_dir, f"{debug_index:03d}_{name}.png"))
+            except Exception as exc:
+                logger.warning("[SIDA-GAUSSIAN-DEBUG] image save failed: %s", exc)
+            self._gaussian_debug_index = debug_index + 1
+        return weight * render_loss
     # [SIDA--]
 
     def forward(

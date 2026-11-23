@@ -51,7 +51,10 @@ class DifferentiableGaussianRenderer(nn.Module):
         batch, views = intrinsics.shape[:2]
         target_h, target_w = map(int, target_hw)
         device = gaussians.means.device
-        dtype = gaussians.means.dtype
+        # [SIDA++] The fused rasterizer extension currently accepts FP32
+        # tensors only. Cast at this boundary so BF16 training remains
+        # differentiable while the CUDA kernel receives a supported dtype.
+        dtype = torch.float32
         output = []
         for batch_index in range(batch):
             k = intrinsics[batch_index, view_index].to(device=device, dtype=dtype).clone()
@@ -89,16 +92,17 @@ class DifferentiableGaussianRenderer(nn.Module):
                 debug=False,
             )
             rasterizer = GaussianRasterizer(settings)
-            means2d = torch.zeros_like(gaussians.means[batch_index], requires_grad=gaussians.means.requires_grad)
+            means3d = gaussians.means[batch_index].float()
+            means2d = torch.zeros_like(means3d, requires_grad=gaussians.means.requires_grad)
             if means2d.requires_grad:
                 means2d.retain_grad()
             rendered, _ = rasterizer(
-                means3D=gaussians.means[batch_index],
+                means3D=means3d,
                 means2D=means2d,
-                shs=gaussians.sh[batch_index],
-                opacities=gaussians.opacities[batch_index],
-                scales=gaussians.scales[batch_index],
-                rotations=gaussians.rotations[batch_index],
+                shs=gaussians.sh[batch_index].float(),
+                opacities=gaussians.opacities[batch_index].float(),
+                scales=gaussians.scales[batch_index].float(),
+                rotations=gaussians.rotations[batch_index].float(),
             )
             output.append(rendered)
         return torch.stack(output, dim=0)

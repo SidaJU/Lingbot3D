@@ -25,9 +25,9 @@ except ImportError:
 
 # [SIDA++] add by SidaZhu for differentiable Gaussian RGB supervision
 class DifferentiableGaussianRenderer(nn.Module):
-    """Project decoded Gaussians and alpha-composite them onto a low-res grid."""
+    """Project decoded Gaussians with the fused rasterizer at 224x224."""
 
-    def __init__(self, render_size: int = 64, background: float = 0.0, use_fused: bool = True) -> None:
+    def __init__(self, render_size: int = 224, background: float = 0.0, use_fused: bool = True) -> None:
         super().__init__()
         if render_size < 8:
             raise ValueError("render_size must be at least 8")
@@ -83,7 +83,7 @@ class DifferentiableGaussianRenderer(nn.Module):
                 scale_modifier=1.0,
                 viewmatrix=view.transpose(0, 1),
                 projmatrix=mvp.transpose(0, 1),
-                sh_degree=0,
+                sh_degree=1,
                 campos=camera_position,
                 prefiltered=False,
                 debug=False,

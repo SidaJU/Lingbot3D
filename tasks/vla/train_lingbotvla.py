@@ -175,10 +175,11 @@ class MyTrainingArguments(TrainingArguments):
     # training parser makes the YAML switches explicit and argparse-safe.
     enable_gaussian_3d: bool = field(default=False, metadata={"help": "Enable Gaussian 3D supervision."})
     gaussian_num_tokens: int = field(default=256, metadata={"help": "Number of Gaussian prefix tokens."})
+    gaussian_output_grid_size: int = field(default=256, metadata={"help": "Static Gaussian output grid side."})
     gaussian_adapter_dim: int = field(default=512, metadata={"help": "Gaussian adapter width."})
     gaussian_adapter_heads: int = field(default=8, metadata={"help": "Gaussian adapter attention heads."})
-    gaussian_render_loss_weight: float = field(default=0.0, metadata={"help": "RGB render loss weight."})
-    gaussian_render_size: int = field(default=64, metadata={"help": "Gaussian render resolution."})
+    gaussian_render_loss_weight: float = field(default=0.2, metadata={"help": "RGB render loss weight."})
+    gaussian_render_size: int = field(default=224, metadata={"help": "Gaussian render resolution."})
     gaussian_use_fused_rasterizer: bool = field(default=True, metadata={"help": "Use CUDA Gaussian rasterizer."})
     gaussian_vggt_model_path: Optional[str] = field(default=None, metadata={"help": "VGGT checkpoint path."})
     gaussian_vggt_image_size: int = field(default=518, metadata={"help": "VGGT input image size."})

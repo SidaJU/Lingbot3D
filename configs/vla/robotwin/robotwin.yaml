@@ -33,7 +33,7 @@ data:
 train:
   output_dir: /path/to/save_ckpt
   moe_monitor_interval: 1000
-  enable_gradient_checkpointing: false # Set to true if GPU memory is insufficient, but this will slow down training.
+  enable_gradient_checkpointing: true # Required for the 6x40G full-spec Gaussian branch.
   precompute_grid_thw: true
   vlm_causal: true
   vlm_fsdp: true
@@ -71,8 +71,8 @@ train:
   lr_decay_style: cosine
   optimizer: muon
   num_train_epochs: 29000
-  micro_batch_size: 32
-  global_batch_size: 1024 # Training uses 32 GPUs: global_batch_size = micro_batch_size * 32
+  micro_batch_size: 1
+  global_batch_size: 6 # Six-GPU baseline; increase via gradient_accumulation_steps after benchmarking.
   max_steps: 50000
   ckpt_manager: dcp
   save_steps: 10000
@@ -145,10 +145,11 @@ train:
   # [SIDA++] add by SidaZhu for the staged Gaussian 3D branch
   enable_gaussian_3d: true
   gaussian_num_tokens: 256
+  gaussian_output_grid_size: 256
   gaussian_adapter_dim: 512
   gaussian_adapter_heads: 8
-  gaussian_render_loss_weight: 0.05
-  gaussian_render_size: 64
+  gaussian_render_loss_weight: 0.2
+  gaussian_render_size: 224
   gaussian_use_fused_rasterizer: true
   gaussian_vggt_model_path: /pfs/slfan/SIDAZHU/models/VGGT-1B/model.pt
   gaussian_vggt_image_size: 518

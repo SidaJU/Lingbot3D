@@ -529,10 +529,11 @@ class FlowMatchingV2(FlowMatchingV1):
             )
             self.gaussian_decoder = GaussianParameterDecoder(
                 hidden_dim=vlm_hidden_size,
-                num_gaussians=self.gaussian_num_tokens,
+                input_num_tokens=self.gaussian_num_tokens,
+                output_grid_size=int(getattr(self.config, "gaussian_output_grid_size", 256)),
             )
             self.gaussian_renderer = DifferentiableGaussianRenderer(
-                render_size=int(getattr(self.config, "gaussian_render_size", 64)),
+                render_size=int(getattr(self.config, "gaussian_render_size", 224)),
                 use_fused=bool(getattr(self.config, "gaussian_use_fused_rasterizer", True)),
             )
         else:

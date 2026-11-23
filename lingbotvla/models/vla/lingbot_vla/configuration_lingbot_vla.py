@@ -96,10 +96,11 @@ class LingbotVLAConfig(PretrainedConfig):
         # [SIDA++] add by SidaZhu for the optional Gaussian 3D prefix branch
         enable_gaussian_3d: bool = False,
         gaussian_num_tokens: int = 256,
+        gaussian_output_grid_size: int = 256,
         gaussian_adapter_dim: int = 512,
         gaussian_adapter_heads: int = 8,
-        gaussian_render_loss_weight: float = 0.0,
-        gaussian_render_size: int = 64,
+        gaussian_render_loss_weight: float = 0.2,
+        gaussian_render_size: int = 224,
         gaussian_use_fused_rasterizer: bool = True,
         gaussian_vggt_model_path: Optional[str] = None,
         gaussian_vggt_image_size: int = 518,
@@ -122,6 +123,7 @@ class LingbotVLAConfig(PretrainedConfig):
         # [SIDA++] add by SidaZhu for Gaussian 3D configuration
         self.enable_gaussian_3d = enable_gaussian_3d
         self.gaussian_num_tokens = gaussian_num_tokens
+        self.gaussian_output_grid_size = gaussian_output_grid_size
         self.gaussian_adapter_dim = gaussian_adapter_dim
         self.gaussian_adapter_heads = gaussian_adapter_heads
         self.gaussian_render_loss_weight = gaussian_render_loss_weight

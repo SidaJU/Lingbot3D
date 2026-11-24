@@ -1175,11 +1175,20 @@ class FlowMatchingV2(FlowMatchingV1):
         state,
         noise=None,
         image_grid_thw=None,
+        gaussian_rgb_images=None,
     ) -> Tensor:
         """Do a full Qwen3-VL inference forward and compute the action."""
         bsize = state.shape[0]
         device = state.device
         dtype = state.dtype
+
+        # [SIDA++] Gaussian 3D: inference must still build the 3D prefix from raw RGB.
+        if self.enable_gaussian_3d and gaussian_rgb_images is None:
+            raise ValueError(
+                "Gaussian 3D inference requires raw multi-view RGB (gaussian_rgb_images / "
+                "observation['pil_images']); the VLM-processed 'images' tensor is not sufficient "
+                "for the VGGT aggregator."
+            )
 
         if noise is None:
             actions_shape = (
@@ -1202,6 +1211,7 @@ class FlowMatchingV2(FlowMatchingV1):
             lang_tokens,
             lang_masks,
             image_grid_thw=image_grid_thw,
+            gaussian_rgb_images=gaussian_rgb_images,
         )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
 

@@ -76,6 +76,13 @@ class PolicyPreprocessMixin:
             observation['images'] = observation['images'].unsqueeze(0)
             observation['img_masks'] = observation['img_masks'].unsqueeze(0)
 
+        # [SIDA++] Gaussian 3D: forward the raw multi-view RGB for VGGT prefix generation.
+        gaussian_rgb_images = observation.get('pil_images', None)
+        if gaussian_rgb_images is not None:
+            if gaussian_rgb_images.ndim == 4:
+                gaussian_rgb_images = gaussian_rgb_images.unsqueeze(0)
+            gaussian_rgb_images = gaussian_rgb_images.to(dtype=dtype, device=device)
+        # [SIDA--]
         actions = self.model.sample_actions(
             observation['images'].to(dtype=dtype, device=device),
             observation['img_masks'].to(device=device),
@@ -83,6 +90,7 @@ class PolicyPreprocessMixin:
             observation['lang_masks'].unsqueeze(0).to(device=device),
             observation['state'].unsqueeze(0).to(dtype=dtype, device=device),
             image_grid_thw=self._to_device_image_grid_thw(observation.get('image_grid_thw'), device),
+            gaussian_rgb_images=gaussian_rgb_images,
         )
         delta_time = time.time() - s1
         print(f'sample_actions cost {delta_time} s')
@@ -120,6 +128,11 @@ class PolicyPreprocessMixin:
         lang_masks = observation["lang_masks"]
         state = observation["state"]
         image_grid_thw = observation.get("image_grid_thw", None)
+        # [SIDA++] Gaussian 3D: raw multi-view RGB for VGGT prefix generation.
+        gaussian_rgb_images = observation.get("pil_images", None)
+        if gaussian_rgb_images is not None:
+            gaussian_rgb_images = gaussian_rgb_images.to(dtype=dtype, device=device)
+        # [SIDA--]
 
         has_batch_dim = img_masks.ndim >= 2
         if not has_batch_dim:
@@ -141,6 +154,7 @@ class PolicyPreprocessMixin:
                             lang_masks.to(device=device),
                             state.to(dtype=dtype, device=device),
                             image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
+                            gaussian_rgb_images=gaussian_rgb_images,
                     )
                 torch.cuda.synchronize()
 
@@ -156,6 +170,7 @@ class PolicyPreprocessMixin:
                                     lang_masks.to(device=device),
                                     state.to(dtype=dtype, device=device),
                                     image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
+                            gaussian_rgb_images=gaussian_rgb_images,
                     )
                     ends[i].record()
                 torch.cuda.synchronize()
@@ -169,6 +184,7 @@ class PolicyPreprocessMixin:
                             lang_masks.to(device=device),
                             state.to(dtype=dtype, device=device),
                             image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
+                            gaussian_rgb_images=gaussian_rgb_images,
             )
 
         delta_time = time.time() - s1

@@ -138,6 +138,8 @@ class PolicyPreprocessMixin:
         if not has_batch_dim:
             images = images.unsqueeze(0)
             img_masks = img_masks.unsqueeze(0)
+            if gaussian_rgb_images is not None and gaussian_rgb_images.ndim == 4:
+                gaussian_rgb_images = gaussian_rgb_images.unsqueeze(0)
         if lang_tokens.ndim == 1:
             lang_tokens = lang_tokens.unsqueeze(0)
             lang_masks = lang_masks.unsqueeze(0)

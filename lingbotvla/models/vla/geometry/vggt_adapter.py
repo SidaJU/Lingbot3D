@@ -70,7 +70,12 @@ class VGGTFeatureEncoder(nn.Module):
     def forward(self, images: Tensor) -> Tensor:
         if images.ndim != 5 or images.shape[2] != 3:
             raise ValueError(f"VGGT expects [B,V,3,H,W] RGB images, got {tuple(images.shape)}")
-        images = images.float().clamp(0.0, 1.0)
+        images = images.float()
+        # Raw RoboTwin frames arrive as uint8-like 0..255 tensors. Accept both
+        # that representation and already-normalized float RGB inputs.
+        if images.numel() > 0 and images.detach().amax() > 1.0:
+            images = images / 255.0
+        images = images.clamp(0.0, 1.0)
         batch, views = images.shape[:2]
         images = F.interpolate(
             images.reshape(batch * views, 3, images.shape[-2], images.shape[-1]),

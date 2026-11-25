@@ -165,6 +165,13 @@ train:
   gaussian_scale_reg_weight: 0.001
   gaussian_opacity_reg_weight: 0.01
   gaussian_edge_smooth_weight: 0.01
+  # VGGT depth head provides pseudo depth targets for Gaussian depth supervision.
+  gaussian_use_vggt_depth_target: true
+  gaussian_depth_loss_weight: 0.1
+  gaussian_depth_conf_threshold: 0.5
+  gaussian_depth_min: 0.05
+  gaussian_depth_max: 8.0
+  gaussian_depth_scale_align: true
   # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after
   # `pip install lpips` succeeds on the training machine.
   # If pre-downloading the backbone, place it at:

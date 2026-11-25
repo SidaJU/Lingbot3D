@@ -138,5 +138,71 @@ def compute_edge_smooth_loss(rgb: torch.Tensor, depth_map: torch.Tensor) -> torc
     grad_disp_x = grad_disp_x * (-1.0 * grad_rgb_x).exp()
     grad_disp_y = grad_disp_y * (-1.0 * grad_rgb_y).exp()
     return grad_disp_x.mean() + grad_disp_y.mean()
+
+
+def compute_gaussian_depth_loss(
+    pred_depth: torch.Tensor,
+    target_depth: torch.Tensor,
+    confidence: torch.Tensor | None = None,
+    conf_threshold: float = 0.5,
+    min_depth: float = 0.05,
+    max_depth: float = 8.0,
+    scale_align: bool = True,
+) -> torch.Tensor:
+    """Masked scale-invariant log-L1 depth loss.
+
+    ``pred_depth`` is the Gaussian decoder depth map [B,1,H,W]. ``target_depth``
+    is a pseudo depth map such as VGGT depth, also [B,1,H,W]. Because pseudo
+    depth is not guaranteed to be metric-calibrated, log-depth is compared
+    after optional per-sample median alignment.
+    """
+    if pred_depth.ndim == 4 and pred_depth.shape[-1] == 1:
+        pred_depth = pred_depth.permute(0, 3, 1, 2)
+    if target_depth.ndim == 4 and target_depth.shape[-1] == 1:
+        target_depth = target_depth.permute(0, 3, 1, 2)
+    if pred_depth.ndim != 4 or pred_depth.shape[1] != 1:
+        raise ValueError(f"pred_depth must be [B,1,H,W], got {tuple(pred_depth.shape)}")
+    if target_depth.ndim != 4 or target_depth.shape[1] != 1:
+        raise ValueError(f"target_depth must be [B,1,H,W], got {tuple(target_depth.shape)}")
+
+    pred = pred_depth.float()
+    target = target_depth.float().detach()
+    if pred.shape[2:] != target.shape[2:]:
+        target = F.interpolate(target, size=pred.shape[2:], mode="bilinear", align_corners=False)
+    if confidence is not None:
+        conf = confidence.float().detach()
+        if conf.ndim == 4 and conf.shape[1] == 1:
+            conf = conf.squeeze(1)
+        elif conf.ndim == 3:
+            pass
+        else:
+            raise ValueError(f"depth confidence must be [B,H,W] or [B,1,H,W], got {tuple(conf.shape)}")
+        if conf.shape[-2:] != pred.shape[2:]:
+            conf = F.interpolate(conf.unsqueeze(1), size=pred.shape[2:], mode="bilinear", align_corners=False).squeeze(1)
+        valid = conf >= float(conf_threshold)
+    else:
+        conf = torch.ones_like(pred.squeeze(1))
+        valid = torch.ones_like(pred.squeeze(1), dtype=torch.bool)
+
+    pred = pred.clamp(min_depth, max_depth)
+    target = target.clamp(min_depth, max_depth)
+    valid = valid & torch.isfinite(pred.squeeze(1)) & torch.isfinite(target.squeeze(1))
+    log_pred = pred.squeeze(1).log()
+    log_target = target.squeeze(1).log()
+
+    if scale_align:
+        shifts = []
+        for b in range(log_pred.shape[0]):
+            row_valid = valid[b]
+            if bool(row_valid.any()):
+                shifts.append(log_pred[b][row_valid].median() - log_target[b][row_valid].median())
+            else:
+                shifts.append(log_pred.new_zeros(()))
+        shift = torch.stack(shifts).view(-1, 1, 1).detach()
+        log_target = log_target + shift
+
+    weights = valid.to(dtype=log_pred.dtype) * conf
+    denom = weights.sum().clamp_min(1.0)
+    return ((log_pred - log_target).abs() * weights).sum() / denom
 # [SIDA--]
 

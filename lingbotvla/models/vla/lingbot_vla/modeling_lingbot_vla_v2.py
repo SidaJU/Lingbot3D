@@ -47,6 +47,7 @@ from lingbotvla.models.vla.geometry import (
     GaussianParameterDecoder,
     build_lpips_fn,
     compute_edge_smooth_loss,
+    compute_gaussian_depth_loss,
     compute_gaussian_regularization,
     compute_rgb_render_loss,
     VGGTFeatureEncoder,
@@ -521,7 +522,10 @@ class FlowMatchingV2(FlowMatchingV1):
                 image_size=int(getattr(self.config, "gaussian_vggt_image_size", 518)),
                 feature_dim=int(getattr(self.config, "gaussian_vggt_feature_dim", 2048)),
                 freeze=bool(getattr(self.config, "gaussian_vggt_freeze", True)),
+                use_depth=bool(getattr(self.config, "gaussian_use_vggt_depth_target", True)),
             )
+            self._gaussian_vggt_depth = None
+            self._gaussian_vggt_depth_conf = None
             self.gaussian_3d_adapter = Gaussian3DPrefixAdapter(
                 feature_dim=int(getattr(self.config, "gaussian_vggt_feature_dim", 2048)),
                 adapter_dim=int(getattr(self.config, "gaussian_adapter_dim", 512)),
@@ -690,7 +694,17 @@ class FlowMatchingV2(FlowMatchingV1):
                 raise ValueError(
                     "Gaussian 3D training requires raw multi-view RGB images for the VGGT aggregator"
                 )
-            vggt_features = self.gaussian_vggt(gaussian_rgb_images)
+            want_depth = bool(getattr(self.config, "gaussian_use_vggt_depth_target", False)) and self.training
+            if want_depth:
+                vggt_features, vggt_depth, vggt_depth_conf = self.gaussian_vggt(
+                    gaussian_rgb_images, return_depth=True
+                )
+                self._gaussian_vggt_depth = vggt_depth.detach() if vggt_depth is not None else None
+                self._gaussian_vggt_depth_conf = vggt_depth_conf.detach() if vggt_depth_conf is not None else None
+            else:
+                vggt_features = self.gaussian_vggt(gaussian_rgb_images)
+                self._gaussian_vggt_depth = None
+                self._gaussian_vggt_depth_conf = None
             gaussian_3d_tokens = self.gaussian_3d_adapter(vggt_features).to(dtype=embed_dtype)
         # [SIDA--]
 
@@ -943,6 +957,7 @@ class FlowMatchingV2(FlowMatchingV1):
         stage: int,
         render_weight: float,
         action_expert_trainable: bool,
+        depth_weight: float | None = None,
     ) -> dict:
         """Apply the official two-stage schedule to the Gaussian 3D branch."""
         stage = int(stage)
@@ -950,10 +965,13 @@ class FlowMatchingV2(FlowMatchingV1):
             raise ValueError(f"Unsupported Gaussian training stage: {stage}")
         self._set_gaussian_action_branch_trainable(bool(action_expert_trainable))
         self.config.gaussian_render_loss_weight = float(render_weight)
+        if depth_weight is not None:
+            self.config.gaussian_depth_loss_weight = float(depth_weight)
         self._gaussian_active_stage = stage
         return {
             "stage": stage,
             "render_weight": float(render_weight),
+            "depth_weight": float(self.config.gaussian_depth_loss_weight),
             "action_expert_trainable": bool(action_expert_trainable),
             "action_loss_enabled": bool(self._gaussian_action_loss_enabled),
         }
@@ -1101,6 +1119,36 @@ class FlowMatchingV2(FlowMatchingV1):
             edge_loss = edge_weight * compute_edge_smooth_loss(targets[primary_name], depth_map)
             metrics["gaussian_render/edge_smooth_loss"] = edge_loss.detach()
             render_loss = render_loss + edge_loss
+
+        depth_weight = float(getattr(self.config, "gaussian_depth_loss_weight", 0.0))
+        if depth_map is not None and depth_weight > 0.0 and getattr(self, "_gaussian_vggt_depth", None) is not None:
+            pseudo_depth = self._gaussian_vggt_depth
+            pseudo_conf = getattr(self, "_gaussian_vggt_depth_conf", None)
+            if pseudo_depth is not None and pseudo_depth.ndim == 5:
+                if primary_index >= pseudo_depth.shape[1]:
+                    raise ValueError(f"VGGT depth view {primary_index} is absent")
+                pseudo_depth = pseudo_depth[:, primary_index]
+                if pseudo_depth.ndim == 4 and pseudo_depth.shape[-1] == 1:
+                    pseudo_depth = pseudo_depth.permute(0, 3, 1, 2)
+            if pseudo_conf is not None and pseudo_conf.ndim == 5:
+                if primary_index >= pseudo_conf.shape[1]:
+                    raise ValueError(f"VGGT depth confidence view {primary_index} is absent")
+                pseudo_conf = pseudo_conf[:, primary_index]
+                if pseudo_conf.ndim == 4 and pseudo_conf.shape[-1] == 1:
+                    pseudo_conf = pseudo_conf.squeeze(-1)
+            depth_loss = compute_gaussian_depth_loss(
+                depth_map,
+                pseudo_depth,
+                confidence=pseudo_conf,
+                conf_threshold=float(getattr(self.config, "gaussian_depth_conf_threshold", 0.5)),
+                min_depth=float(getattr(self.config, "gaussian_depth_min", 0.05)),
+                max_depth=float(getattr(self.config, "gaussian_depth_max", 8.0)),
+                scale_align=bool(getattr(self.config, "gaussian_depth_scale_align", True)),
+            )
+            weighted_depth_loss = depth_weight * depth_loss
+            metrics["gaussian_render/depth_loss"] = depth_loss.detach()
+            metrics["gaussian_render/depth_loss_weighted"] = weighted_depth_loss.detach()
+            render_loss = render_loss + weighted_depth_loss
         metrics["gaussian_render/total_raw"] = render_loss.detach()
 
         # [SIDA++] optional diagnostics for the Gaussian integration stage.
@@ -1767,11 +1815,13 @@ class LingbotVlaV2Policy(PreTrainedModel):
         stage: int,
         render_weight: float,
         action_expert_trainable: bool,
+        depth_weight: float | None = None,
     ) -> dict:
         return self.model.apply_gaussian_training_stage(
             stage=stage,
             render_weight=render_weight,
             action_expert_trainable=action_expert_trainable,
+            depth_weight=depth_weight,
         )
 
     def get_gaussian_stage_state(self) -> dict:

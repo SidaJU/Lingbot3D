@@ -29,6 +29,7 @@ class VGGTFeatureEncoder(nn.Module):
         feature_dim: int = 2048,
         freeze: bool = True,
         output_grid: int = 16,
+        use_depth: bool = True,
     ) -> None:
         super().__init__()
         try:
@@ -41,12 +42,13 @@ class VGGTFeatureEncoder(nn.Module):
         self.image_size = int(image_size)
         self.output_grid = int(output_grid)
         self.feature_dim = int(feature_dim)
+        self.use_depth = bool(use_depth)
         self.encoder = VGGT(
             img_size=self.image_size,
             embed_dim=self.feature_dim // 2,
             enable_camera=False,
             enable_point=False,
-            enable_depth=False,
+            enable_depth=self.use_depth,
             enable_track=False,
             feature_only=True,
         )
@@ -67,7 +69,7 @@ class VGGTFeatureEncoder(nn.Module):
         if freeze:
             self.eval()
 
-    def forward(self, images: Tensor) -> Tensor:
+    def forward(self, images: Tensor, return_depth: bool = False):
         if images.ndim != 5 or images.shape[2] != 3:
             raise ValueError(f"VGGT expects [B,V,3,H,W] RGB images, got {tuple(images.shape)}")
         images = images.float()
@@ -114,5 +116,11 @@ class VGGTFeatureEncoder(nn.Module):
             raise ValueError(f"VGGT patch count must form a square grid, got {patches}")
         features = features.reshape(batch * views, side, side, features.shape[-1]).permute(0, 3, 1, 2)
         features = F.adaptive_avg_pool2d(features, (self.output_grid, self.output_grid))
-        return features.flatten(2).transpose(1, 2).reshape(batch, views, self.output_grid**2, -1)
+        pooled_features = features.flatten(2).transpose(1, 2).reshape(batch, views, self.output_grid**2, -1)
+        if not return_depth:
+            return pooled_features
+
+        depth = outputs.get("depth") if self.use_depth else None
+        depth_conf = outputs.get("depth_conf") if self.use_depth else None
+        return pooled_features, depth, depth_conf
 # [SIDA--]

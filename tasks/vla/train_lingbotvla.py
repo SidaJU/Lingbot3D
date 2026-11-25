@@ -206,6 +206,7 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_adapter_dim: int = field(default=512, metadata={"help": "Gaussian adapter width."})
     gaussian_adapter_heads: int = field(default=8, metadata={"help": "Gaussian adapter attention heads."})
     gaussian_render_loss_weight: float = field(default=0.2, metadata={"help": "RGB render loss weight."})
+    gaussian_depth_loss_weight: float = field(default=0.1, metadata={"help": "VGGT pseudo-depth loss weight."})
     gaussian_render_size: int = field(default=224, metadata={"help": "Gaussian render resolution."})
     gaussian_use_fused_rasterizer: bool = field(default=True, metadata={"help": "Use CUDA Gaussian rasterizer."})
     gaussian_vggt_model_path: Optional[str] = field(default=None, metadata={"help": "VGGT checkpoint path."})
@@ -649,20 +650,23 @@ def main():
         if not bool(getattr(args.train, "gaussian_enable_staged_training", False)):
             return
         stage = 1 if step < int(getattr(args.train, "gaussian_stage1_steps", 9000)) else 2
+        base_depth_weight = float(getattr(args.train, "gaussian_depth_loss_weight", 0.1))
         if stage == 1:
             render_weight = float(getattr(args.train, "gaussian_stage1_render_weight", 0.2))
+            world_multiplier = 1.0
             action_trainable = False
             lr_scale = 1.0
         else:
             configured = float(getattr(args.train, "gaussian_stage2_render_weight", 0.05))
-            multiplier = float(getattr(args.train, "gaussian_stage2_world_loss_multiplier", 0.1))
-            render_weight = configured * multiplier
+            world_multiplier = float(getattr(args.train, "gaussian_stage2_world_loss_multiplier", 0.1))
+            render_weight = configured * world_multiplier
             action_trainable = True
             lr_scale = (
                 float(getattr(args.train, "gaussian_stage2_gaussian_lr_scale", 0.25))
                 if bool(getattr(args.train, "gaussian_stage2_keep_world_model_trainable", True))
                 else 0.0
             )
+        depth_weight = base_depth_weight * world_multiplier
         if _gaussian_last_stage == stage:
             return
 
@@ -674,8 +678,10 @@ def main():
             stage=stage,
             render_weight=render_weight,
             action_expert_trainable=action_trainable,
+            depth_weight=depth_weight,
         )
         args.train.gaussian_render_loss_weight = render_weight
+        args.train.gaussian_depth_loss_weight = depth_weight
         for group_idx, base_lr in _gaussian_group_base_lrs.items():
             scaled_lr = base_lr * lr_scale
             optimizer.param_groups[group_idx]["lr"] = scaled_lr

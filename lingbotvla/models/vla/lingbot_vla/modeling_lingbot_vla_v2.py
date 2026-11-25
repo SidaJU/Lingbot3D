@@ -1115,29 +1115,35 @@ class FlowMatchingV2(FlowMatchingV1):
 
         edge_weight = float(getattr(self.config, "gaussian_edge_smooth_weight", 0.01))
         depth_map = getattr(gaussian_params, "depth_map", None)
+
+        # Keep primary-view depth tensors for both the loss and debug images.
+        debug_depth_pred = depth_map
+        debug_depth_target = getattr(self, "_gaussian_vggt_depth", None)
+        if debug_depth_target is not None and debug_depth_target.ndim == 5:
+            if primary_index < debug_depth_target.shape[1]:
+                debug_depth_target = debug_depth_target[:, primary_index]
+                if debug_depth_target.ndim == 4 and debug_depth_target.shape[-1] == 1:
+                    debug_depth_target = debug_depth_target.permute(0, 3, 1, 2)
+            else:
+                debug_depth_target = None
+        debug_depth_conf = getattr(self, "_gaussian_vggt_depth_conf", None)
+        if debug_depth_conf is not None and debug_depth_conf.ndim in (4, 5):
+            if primary_index < debug_depth_conf.shape[1]:
+                debug_depth_conf = debug_depth_conf[:, primary_index]
+                if debug_depth_conf.ndim == 4 and debug_depth_conf.shape[-1] == 1:
+                    debug_depth_conf = debug_depth_conf.squeeze(-1)
+            else:
+                debug_depth_conf = None
+
         if depth_map is not None and edge_weight > 0.0:
             edge_loss = edge_weight * compute_edge_smooth_loss(targets[primary_name], depth_map)
             metrics["gaussian_render/edge_smooth_loss"] = edge_loss.detach()
             render_loss = render_loss + edge_loss
 
         depth_weight = float(getattr(self.config, "gaussian_depth_loss_weight", 0.0))
-        if depth_map is not None and depth_weight > 0.0 and getattr(self, "_gaussian_vggt_depth", None) is not None:
-            pseudo_depth = self._gaussian_vggt_depth
-            pseudo_conf = getattr(self, "_gaussian_vggt_depth_conf", None)
-            if pseudo_depth is not None and pseudo_depth.ndim == 5:
-                if primary_index >= pseudo_depth.shape[1]:
-                    raise ValueError(f"VGGT depth view {primary_index} is absent")
-                pseudo_depth = pseudo_depth[:, primary_index]
-                if pseudo_depth.ndim == 4 and pseudo_depth.shape[-1] == 1:
-                    pseudo_depth = pseudo_depth.permute(0, 3, 1, 2)
-            # VGGT returns depth_conf as [B,S,H,W], while some wrappers keep a
-            # trailing channel as [B,S,H,W,1]. Select the primary view for both.
-            if pseudo_conf is not None and pseudo_conf.ndim in (4, 5):
-                if primary_index >= pseudo_conf.shape[1]:
-                    raise ValueError(f"VGGT depth confidence view {primary_index} is absent")
-                pseudo_conf = pseudo_conf[:, primary_index]
-                if pseudo_conf.ndim == 4 and pseudo_conf.shape[-1] == 1:
-                    pseudo_conf = pseudo_conf.squeeze(-1)
+        if depth_map is not None and depth_weight > 0.0 and debug_depth_target is not None:
+            pseudo_depth = debug_depth_target
+            pseudo_conf = debug_depth_conf
             depth_loss = compute_gaussian_depth_loss(
                 depth_map,
                 pseudo_depth,
@@ -1188,6 +1194,12 @@ class FlowMatchingV2(FlowMatchingV1):
                     current_step, view_name, _stats(rendered), _stats(target),
                     view_loss.item(), (weight * view_loss).item(),
                 )
+            if debug_depth_pred is not None:
+                logger.warning(
+                    "[SIDA-GAUSSIAN-DEBUG] step=%d predicted depth: %s target depth: %s",
+                    current_step, _stats(debug_depth_pred),
+                    "None" if debug_depth_target is None else _stats(debug_depth_target),
+                )
             try:
                 from PIL import Image
 
@@ -1209,6 +1221,59 @@ class FlowMatchingV2(FlowMatchingV1):
                     compare.paste(images_u8["target"], (0, 0))
                     compare.paste(images_u8["rendered"], (images_u8["target"].width, 0))
                     compare.save(os.path.join(debug_dir, f"{prefix}_{view_name}_compare.png"))
+
+                if debug_depth_pred is not None and debug_depth_target is not None:
+                    min_depth = float(getattr(self.config, "gaussian_depth_min", 0.05))
+                    max_depth = float(getattr(self.config, "gaussian_depth_max", 8.0))
+
+                    def _depth_hw(value: torch.Tensor) -> torch.Tensor:
+                        value = value.detach().float()
+                        if value.ndim == 4:
+                            value = value[0]
+                            if value.ndim == 3 and value.shape[0] == 1:
+                                value = value[0]
+                            elif value.ndim == 3 and value.shape[-1] == 1:
+                                value = value[..., 0]
+                        elif value.ndim == 3 and value.shape[0] == 1:
+                            value = value[0]
+                        return value
+
+                    pred_depth_hw = _depth_hw(debug_depth_pred)
+                    target_depth_hw = _depth_hw(debug_depth_target)
+                    if pred_depth_hw.shape[-2:] != target_depth_hw.shape[-2:]:
+                        target_depth_hw = F.interpolate(
+                            target_depth_hw[None, None],
+                            size=pred_depth_hw.shape[-2:],
+                            mode="bilinear",
+                            align_corners=False,
+                        )[0, 0]
+                    pred_depth_hw = pred_depth_hw.clamp(min_depth, max_depth)
+                    target_depth_hw = target_depth_hw.clamp(min_depth, max_depth)
+                    pred_depth_hw = torch.nan_to_num(pred_depth_hw, nan=min_depth, posinf=max_depth, neginf=min_depth)
+                    target_depth_hw = torch.nan_to_num(target_depth_hw, nan=min_depth, posinf=max_depth, neginf=min_depth)
+                    valid = torch.isfinite(pred_depth_hw) & torch.isfinite(target_depth_hw)
+                    if bool(valid.any()):
+                        depth_values = torch.cat((pred_depth_hw[valid], target_depth_hw[valid]))
+                        depth_lo = float(torch.quantile(depth_values, 0.02).item())
+                        depth_hi = float(torch.quantile(depth_values, 0.98).item())
+                    else:
+                        depth_lo, depth_hi = min_depth, max_depth
+                    if depth_hi <= depth_lo + 1e-6:
+                        depth_lo, depth_hi = min_depth, max_depth
+
+                    def _depth_image(depth_hw: torch.Tensor) -> Image.Image:
+                        scaled = (depth_hw - depth_lo) / (depth_hi - depth_lo)
+                        array = scaled.clamp(0.0, 1.0).mul(255.0).round().byte().cpu().numpy()
+                        return Image.fromarray(array, mode="L").convert("RGB")
+
+                    depth_target_img = _depth_image(target_depth_hw)
+                    depth_pred_img = _depth_image(pred_depth_hw)
+                    depth_target_img.save(os.path.join(debug_dir, f"{prefix}_{primary_name}_depth_target.png"))
+                    depth_pred_img.save(os.path.join(debug_dir, f"{prefix}_{primary_name}_depth_pred.png"))
+                    depth_compare = Image.new("RGB", (depth_target_img.width * 2, depth_target_img.height))
+                    depth_compare.paste(depth_target_img, (0, 0))
+                    depth_compare.paste(depth_pred_img, (depth_target_img.width, 0))
+                    depth_compare.save(os.path.join(debug_dir, f"{prefix}_{primary_name}_depth_compare.png"))
             except Exception as exc:
                 logger.warning("[SIDA-GAUSSIAN-DEBUG] image save failed: %s", exc)
             if is_first_dump:

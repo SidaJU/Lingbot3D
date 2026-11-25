@@ -177,10 +177,10 @@ train:
   # If pre-downloading the backbone, place it at:
   #   ${gaussian_lpips_cache_dir}/hub/checkpoints/vgg16-397923af.pth
   # and point gaussian_lpips_cache_dir to that cache root.
-  gaussian_use_lpips: false
+  gaussian_use_lpips: true
   gaussian_lpips_weight: 0.1
   gaussian_lpips_net: vgg
-  gaussian_lpips_cache_dir: ""
+  gaussian_lpips_cache_dir: /pfs/slfan/SIDAZHU/models/lpips_cache
   gaussian_vggt_model_path: /pfs/slfan/SIDAZHU/models/VGGT-1B/model.pt
   gaussian_vggt_image_size: 518
   gaussian_vggt_feature_dim: 2048

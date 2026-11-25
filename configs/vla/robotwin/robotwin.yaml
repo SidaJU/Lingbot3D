@@ -183,4 +183,12 @@ train:
   gaussian_enable_lora: true
   gaussian_lora_rank: 8
   gaussian_lora_alpha: 16
+  # Official GaussianDream two-stage schedule.
+  gaussian_enable_staged_training: true
+  gaussian_stage1_steps: 9000
+  gaussian_stage1_render_weight: 0.2
+  gaussian_stage2_render_weight: 0.05
+  gaussian_stage2_world_loss_multiplier: 0.1
+  gaussian_stage2_keep_world_model_trainable: true
+  gaussian_stage2_gaussian_lr_scale: 0.25
   # [SIDA--]

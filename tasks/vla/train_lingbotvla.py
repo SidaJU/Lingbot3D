@@ -116,6 +116,33 @@ def get_moe_param_groups(model: "torch.nn.Module", args_train) -> Optional[List[
 
     return [{"params": params, "lr": lr} for lr, params in lr_to_params.items() if params]
 
+
+def split_gaussian_optimizer_groups(optimizer, gaussian_param_ids) -> int:
+    """Give Gaussian decoder/adapter params their own optimizer groups.
+
+    The official stage2 applies a 0.25 LR scale to the Gaussian/shared-backbone
+    branch. We need a separate group because stage1 must still train at base LR.
+    """
+    gaussian_param_ids = set(gaussian_param_ids)
+    inner_optimizers = getattr(optimizer, "optimizers", None) or [optimizer]
+    split_count = 0
+    for inner_optimizer in inner_optimizers:
+        for group in list(inner_optimizer.param_groups):
+            gauss_params = [p for p in group["params"] if id(p) in gaussian_param_ids]
+            if not gauss_params:
+                continue
+            other_params = [p for p in group["params"] if id(p) not in gaussian_param_ids]
+            if other_params:
+                group["params"] = other_params
+                gaussian_group = {k: v for k, v in group.items() if k != "params"}
+                gaussian_group["params"] = gauss_params
+                gaussian_group["gaussian_branch"] = True
+                inner_optimizer.add_param_group(gaussian_group)
+            else:
+                group["gaussian_branch"] = True
+            split_count += 1
+    return split_count
+
 @dataclass
 class MyTrainingArguments(TrainingArguments):
     freeze_vit: bool = field(
@@ -190,6 +217,13 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_enable_lora: bool = field(default=False, metadata={"help": "Enable Gaussian/VLM LoRA."})
     gaussian_lora_rank: int = field(default=8, metadata={"help": "Gaussian LoRA rank."})
     gaussian_lora_alpha: int = field(default=16, metadata={"help": "Gaussian LoRA alpha."})
+    gaussian_enable_staged_training: bool = field(default=False, metadata={"help": "Use official two-stage GaussianDream training schedule."})
+    gaussian_stage1_steps: int = field(default=9000, metadata={"help": "Stage1 length; action expert is frozen before this step."})
+    gaussian_stage1_render_weight: float = field(default=0.2, metadata={"help": "Stage1 render loss weight."})
+    gaussian_stage2_render_weight: float = field(default=0.05, metadata={"help": "Stage2 configured render loss weight."})
+    gaussian_stage2_world_loss_multiplier: float = field(default=0.1, metadata={"help": "Stage2 multiplier for all world-model losses."})
+    gaussian_stage2_keep_world_model_trainable: bool = field(default=True, metadata={"help": "Keep Gaussian branch trainable in stage2."})
+    gaussian_stage2_gaussian_lr_scale: float = field(default=0.25, metadata={"help": "Stage2 Gaussian branch LR scale."})
     # [SIDA--]
     attention_implementation: str = field(
         default="flex",
@@ -561,6 +595,17 @@ def main():
             param_groups=moe_param_groups,
         )
 
+    # [SIDA++] stage2 Gaussian LR scale needs a dedicated optimizer group.
+    if bool(getattr(args.train, "gaussian_enable_staged_training", False)):
+        gaussian_param_ids = {
+            id(p)
+            for name, p in model.named_parameters()
+            if "gaussian_decoder" in name or "gaussian_3d_adapter" in name
+        }
+        n_gaussian_groups = split_gaussian_optimizer_groups(optimizer, gaussian_param_ids)
+        logger.info_rank0(f"Split {n_gaussian_groups} Gaussian optimizer groups for staged training")
+    # [SIDA--]
+
     # Register loss-free load balancing hook (before optimizer.step).
     # The hook also all-reduces and snapshots
     # last_tokens_per_expert (the global load used for monitoring). Setting
@@ -591,6 +636,54 @@ def main():
         lr_warmup_ratio=args.train.lr_warmup_ratio,
         lr_start=args.train.lr_start,
     )
+
+    # [SIDA++] official GaussianDream two-stage schedule hook.
+    _gaussian_last_stage = None
+    _gaussian_group_base_lrs = {}
+    for _group_idx, _group in enumerate(optimizer.param_groups):
+        if _group.get("gaussian_branch", False):
+            _gaussian_group_base_lrs[_group_idx] = float(_group["lr"])
+
+    def _apply_gaussian_training_stage(step: int):
+        nonlocal _gaussian_last_stage
+        if not bool(getattr(args.train, "gaussian_enable_staged_training", False)):
+            return
+        stage = 1 if step < int(getattr(args.train, "gaussian_stage1_steps", 9000)) else 2
+        if stage == 1:
+            render_weight = float(getattr(args.train, "gaussian_stage1_render_weight", 0.2))
+            action_trainable = False
+            lr_scale = 1.0
+        else:
+            configured = float(getattr(args.train, "gaussian_stage2_render_weight", 0.05))
+            multiplier = float(getattr(args.train, "gaussian_stage2_world_loss_multiplier", 0.1))
+            render_weight = configured * multiplier
+            action_trainable = True
+            lr_scale = (
+                float(getattr(args.train, "gaussian_stage2_gaussian_lr_scale", 0.25))
+                if bool(getattr(args.train, "gaussian_stage2_keep_world_model_trainable", True))
+                else 0.0
+            )
+        if _gaussian_last_stage == stage:
+            return
+
+        policy = getattr(model, "module", model)
+        apply_stage = getattr(policy, "apply_gaussian_training_stage", None)
+        if apply_stage is None:
+            raise RuntimeError("Staged Gaussian training requires policy.apply_gaussian_training_stage")
+        stage_state = apply_stage(
+            stage=stage,
+            render_weight=render_weight,
+            action_expert_trainable=action_trainable,
+        )
+        args.train.gaussian_render_loss_weight = render_weight
+        for group_idx, base_lr in _gaussian_group_base_lrs.items():
+            scaled_lr = base_lr * lr_scale
+            optimizer.param_groups[group_idx]["lr"] = scaled_lr
+            if hasattr(lr_scheduler, "base_lrs") and group_idx < len(lr_scheduler.base_lrs):
+                lr_scheduler.base_lrs[group_idx] = scaled_lr
+        _gaussian_last_stage = stage
+        logger.info_rank0(f"Applied Gaussian training stage: {stage_state}")
+    # [SIDA--]
 
     if args.train.global_rank == 0:
         log_dir=f"{args.train.output_dir}/runs/"
@@ -754,6 +847,7 @@ def main():
         for epoch_step in range(start_step, args.train.train_steps):
             current_epoch_step_for_eval = epoch_step + 1
             global_step += 1
+            _apply_gaussian_training_stage(global_step)
             # Expose the optimizer step to Gaussian debug hooks inside the model.
             # The render-loss hook lives on the inner model of the policy, not
             # necessarily on the outer FSDP/DDP wrapper.

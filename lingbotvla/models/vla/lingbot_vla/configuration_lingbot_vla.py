@@ -114,6 +114,13 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_lpips_weight: float = 0.1,
         gaussian_lpips_net: str = "vgg",
         gaussian_lpips_cache_dir: Optional[str] = None,
+        gaussian_enable_staged_training: bool = False,
+        gaussian_stage1_steps: int = 9000,
+        gaussian_stage1_render_weight: float = 0.2,
+        gaussian_stage2_render_weight: float = 0.05,
+        gaussian_stage2_world_loss_multiplier: float = 0.1,
+        gaussian_stage2_keep_world_model_trainable: bool = True,
+        gaussian_stage2_gaussian_lr_scale: float = 0.25,
         gaussian_vggt_model_path: Optional[str] = None,
         gaussian_vggt_image_size: int = 518,
         gaussian_vggt_feature_dim: int = 2048,
@@ -153,6 +160,13 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_lpips_weight = gaussian_lpips_weight
         self.gaussian_lpips_net = gaussian_lpips_net
         self.gaussian_lpips_cache_dir = gaussian_lpips_cache_dir
+        self.gaussian_enable_staged_training = gaussian_enable_staged_training
+        self.gaussian_stage1_steps = gaussian_stage1_steps
+        self.gaussian_stage1_render_weight = gaussian_stage1_render_weight
+        self.gaussian_stage2_render_weight = gaussian_stage2_render_weight
+        self.gaussian_stage2_world_loss_multiplier = gaussian_stage2_world_loss_multiplier
+        self.gaussian_stage2_keep_world_model_trainable = gaussian_stage2_keep_world_model_trainable
+        self.gaussian_stage2_gaussian_lr_scale = gaussian_stage2_gaussian_lr_scale
         self.gaussian_vggt_model_path = gaussian_vggt_model_path
         self.gaussian_vggt_image_size = gaussian_vggt_image_size
         self.gaussian_vggt_feature_dim = gaussian_vggt_feature_dim

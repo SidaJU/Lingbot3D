@@ -19,8 +19,13 @@ def inject_vlm_lora(
     rank: int = 8,
     alpha: int | None = None,
     target_modules: Iterable[str] = ("q_proj", "k_proj", "v_proj", "o_proj"),
+    freeze_action_expert: bool = True,
 ) -> None:
-    """Freeze VLM/action-expert weights and inject LoRA only into ``qwenvl``.
+    """Freeze VLM weights and inject LoRA only into ``qwenvl``.
+
+    In staged training the action expert must remain trainable until the
+    optimizer is built; the stage hook then freezes it for stage 1 and unfreezes
+    it for stage 2. Pass ``freeze_action_expert=False`` in that mode.
 
     This function intentionally fails early when a target suffix is not found,
     instead of silently training the wrong submodule.
@@ -33,7 +38,7 @@ def inject_vlm_lora(
     vlm.requires_grad_(False)
     if hasattr(vlm, "visual"):
         vlm.visual.requires_grad_(False)
-    if hasattr(vlm_wrapper, "qwen_expert"):
+    if freeze_action_expert and hasattr(vlm_wrapper, "qwen_expert"):
         vlm_wrapper.qwen_expert.requires_grad_(False)
 
     supported = {name.rsplit(".", 1)[-1] for name, _ in vlm.named_modules()}

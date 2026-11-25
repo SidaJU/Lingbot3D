@@ -482,10 +482,12 @@ class FlowMatchingV2(FlowMatchingV1):
         if bool(getattr(self.config, "gaussian_enable_lora", False)):
             from lingbotvla.models.vla.geometry.lora_setup import inject_vlm_lora
 
+            staged_training = bool(getattr(self.config, "gaussian_enable_staged_training", False))
             inject_vlm_lora(
                 self.qwenvl_with_expert,
                 rank=int(getattr(self.config, "gaussian_lora_rank", 8)),
                 alpha=int(getattr(self.config, "gaussian_lora_alpha", 16)),
+                freeze_action_expert=not staged_training,
             )
         # [SIDA--]
         self.config.proj_width = qwenvl_with_export_config.qwen_expert_config.hidden_size
@@ -498,14 +500,11 @@ class FlowMatchingV2(FlowMatchingV1):
         self.action_time_mlp_out = nn.Linear(self.config.proj_width, self.config.proj_width)
 
         # [SIDA++] add by SidaZhu for freezing action-side projections in LoRA mode
-        if bool(getattr(self.config, "gaussian_enable_lora", False)):
-            for module in (
-                self.state_proj,
-                self.action_in_proj,
-                self.action_out_proj,
-                self.action_time_mlp_in,
-                self.action_time_mlp_out,
-            ):
+        self._gaussian_staged_training = bool(getattr(self.config, "gaussian_enable_staged_training", False))
+        self._gaussian_action_loss_enabled = True
+        self._gaussian_active_stage = None
+        if bool(getattr(self.config, "gaussian_enable_lora", False)) and not self._gaussian_staged_training:
+            for module in self._gaussian_action_modules():
                 module.requires_grad_(False)
         # [SIDA--]
 
@@ -921,6 +920,55 @@ class FlowMatchingV2(FlowMatchingV1):
         return hidden_states[:, start:end, :]
     # [SIDA--]
 
+    # [SIDA++] official GaussianDream-style staged training controls
+    def _gaussian_action_modules(self):
+        return (
+            self.state_proj,
+            self.action_in_proj,
+            self.action_out_proj,
+            self.action_time_mlp_in,
+            self.action_time_mlp_out,
+        )
+
+    def _set_gaussian_action_branch_trainable(self, trainable: bool) -> None:
+        qwen_expert = getattr(self.qwenvl_with_expert, "qwen_expert", None)
+        if qwen_expert is not None:
+            qwen_expert.requires_grad_(bool(trainable))
+        for module in self._gaussian_action_modules():
+            module.requires_grad_(bool(trainable))
+        self._gaussian_action_loss_enabled = bool(trainable)
+
+    def apply_gaussian_training_stage(
+        self,
+        stage: int,
+        render_weight: float,
+        action_expert_trainable: bool,
+    ) -> dict:
+        """Apply the official two-stage schedule to the Gaussian 3D branch."""
+        stage = int(stage)
+        if stage not in (1, 2):
+            raise ValueError(f"Unsupported Gaussian training stage: {stage}")
+        self._set_gaussian_action_branch_trainable(bool(action_expert_trainable))
+        self.config.gaussian_render_loss_weight = float(render_weight)
+        self._gaussian_active_stage = stage
+        return {
+            "stage": stage,
+            "render_weight": float(render_weight),
+            "action_expert_trainable": bool(action_expert_trainable),
+            "action_loss_enabled": bool(self._gaussian_action_loss_enabled),
+        }
+
+    def get_gaussian_stage_state(self) -> dict:
+        return {
+            "stage": self._gaussian_active_stage,
+            "render_weight": float(getattr(self.config, "gaussian_render_loss_weight", 0.0)),
+            "action_expert_trainable": bool(
+                getattr(getattr(self.qwenvl_with_expert, "qwen_expert", None), "training", False)
+                and any(p.requires_grad for p in self.qwenvl_with_expert.qwen_expert.parameters())
+            ) if getattr(self.qwenvl_with_expert, "qwen_expert", None) is not None else False,
+            "action_loss_enabled": bool(getattr(self, "_gaussian_action_loss_enabled", True)),
+        }
+
     # [SIDA++] add by SidaZhu for Gaussian token decode and multi-view RGB render loss
     def _gaussian_rgb_render_loss(
         self,
@@ -1293,6 +1341,8 @@ class FlowMatchingV2(FlowMatchingV1):
             moe_metrics["gaussian_render_loss_raw"] = loss_gaussian.detach()
         if align_metrics:
             moe_metrics.update(align_metrics)
+        if not getattr(self, "_gaussian_action_loss_enabled", True):
+            losses = losses * 0.0
         return losses, loss_depth, loss_future_depth, loss_future_video, loss_gaussian, depth_preds, seq_wise_loss, router_z_loss, moe_metrics, future_depth_preds, future_video_preds, current_video_preds
 
     def sample_actions(
@@ -1711,6 +1761,21 @@ class LingbotVlaV2Policy(PreTrainedModel):
         if moe_metrics:
             loss_dict.update(moe_metrics)
         return total_loss, loss_vla, loss_depth, loss_future_depth, loss_future_video, seq_wise_loss, loss_dict, depth_preds, future_depth_preds, future_video_preds, current_video_preds
+
+    def apply_gaussian_training_stage(
+        self,
+        stage: int,
+        render_weight: float,
+        action_expert_trainable: bool,
+    ) -> dict:
+        return self.model.apply_gaussian_training_stage(
+            stage=stage,
+            render_weight=render_weight,
+            action_expert_trainable=action_expert_trainable,
+        )
+
+    def get_gaussian_stage_state(self) -> dict:
+        return self.model.get_gaussian_stage_state()
 
     def sample_actions(self, *args, **kwargs) -> Tensor:
         return self.model.sample_actions(*args, **kwargs)

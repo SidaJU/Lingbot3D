@@ -952,13 +952,23 @@ class FlowMatchingV2(FlowMatchingV1):
         target = F.interpolate(target, size=rendered.shape[-2:], mode="bilinear", align_corners=False)
         render_loss = compute_rgb_render_loss(rendered, target)
 
-        # [SIDA++] optional diagnostic for the first Gaussian integration stage.
-        # Enabled only with LINGBOT_GAUSSIAN_DEBUG=1; it records finite-value
-        # statistics and saves a rendered/target pair without changing defaults.
+        # [SIDA++] optional diagnostics for the Gaussian integration stage.
+        # LINGBOT_GAUSSIAN_DEBUG=1 enables finite-value stats and image dumps.
+        # LINGBOT_GAUSSIAN_DEBUG_LIMIT controls the first N calls; optionally
+        # LINGBOT_GAUSSIAN_SAVE_INTERVAL dumps once per N optimizer steps.
         debug_enabled = os.environ.get("LINGBOT_GAUSSIAN_DEBUG", "0").lower() in {"1", "true", "yes"}
         debug_index = int(getattr(self, "_gaussian_debug_index", 0))
         debug_limit = int(os.environ.get("LINGBOT_GAUSSIAN_DEBUG_LIMIT", "3"))
-        if debug_enabled and debug_index < debug_limit and os.environ.get("RANK", "0") == "0":
+        save_interval = int(os.environ.get("LINGBOT_GAUSSIAN_SAVE_INTERVAL", "0"))
+        current_step = int(getattr(self, "_gaussian_debug_train_step", -1))
+        is_first_dump = debug_index < debug_limit
+        is_interval_dump = (
+            save_interval > 0
+            and current_step > 0
+            and current_step % save_interval == 0
+            and getattr(self, "_gaussian_debug_saved_step", -1) != current_step
+        )
+        if debug_enabled and os.environ.get("RANK", "0") == "0" and (is_first_dump or is_interval_dump):
             def _stats(value):
                 value = value.detach().float()
                 return (
@@ -968,27 +978,40 @@ class FlowMatchingV2(FlowMatchingV1):
                     f"nan={int(torch.isnan(value).any())} inf={int(torch.isinf(value).any())}"
                 )
 
-            logger.warning("[SIDA-GAUSSIAN-DEBUG] tokens: %s", _stats(tokens))
+            logger.warning(
+                "[SIDA-GAUSSIAN-DEBUG] step=%d idx=%d tokens: %s",
+                current_step, debug_index, _stats(tokens),
+            )
             for name, value in vars(gaussian_params).items():
                 logger.warning("[SIDA-GAUSSIAN-DEBUG] gaussian.%s: %s", name, _stats(value))
             logger.warning(
-                "[SIDA-GAUSSIAN-DEBUG] rendered: %s target: %s raw_loss=%.6g weighted_loss=%.6g",
-                _stats(rendered), _stats(target), render_loss.item(), (weight * render_loss).item(),
+                "[SIDA-GAUSSIAN-DEBUG] step=%d rendered: %s target: %s raw_loss=%.6g weighted_loss=%.6g",
+                current_step, _stats(rendered), _stats(target), render_loss.item(), (weight * render_loss).item(),
             )
             try:
                 from PIL import Image
 
                 debug_dir = os.environ.get("LINGBOT_GAUSSIAN_DEBUG_DIR", "./gaussian_debug")
                 os.makedirs(debug_dir, exist_ok=True)
+                prefix = f"step{current_step:06d}_idx{debug_index:03d}" if current_step >= 0 else f"idx{debug_index:03d}"
+                images_u8 = {}
                 for name, image in (("rendered", rendered), ("target", target)):
                     image_u8 = (
                         image[0].detach().float().clamp(0.0, 1.0)
                         .permute(1, 2, 0).mul(255.0).round().byte().cpu().numpy()
                     )
-                    Image.fromarray(image_u8).save(os.path.join(debug_dir, f"{debug_index:03d}_{name}.png"))
+                    images_u8[name] = Image.fromarray(image_u8)
+                    images_u8[name].save(os.path.join(debug_dir, f"{prefix}_{name}.png"))
+                compare = Image.new("RGB", (images_u8["target"].width * 2, images_u8["target"].height))
+                compare.paste(images_u8["target"], (0, 0))
+                compare.paste(images_u8["rendered"], (images_u8["target"].width, 0))
+                compare.save(os.path.join(debug_dir, f"{prefix}_compare.png"))
             except Exception as exc:
                 logger.warning("[SIDA-GAUSSIAN-DEBUG] image save failed: %s", exc)
-            self._gaussian_debug_index = debug_index + 1
+            if is_first_dump:
+                self._gaussian_debug_index = debug_index + 1
+            if is_interval_dump:
+                self._gaussian_debug_saved_step = current_step
         return weight * render_loss
     # [SIDA--]
 

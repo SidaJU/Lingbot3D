@@ -183,27 +183,47 @@ def _dispatch_buffer(
 def _init_parameter(
     module: "nn.Module",
     name: str,
+    init_func: Optional[Callable[["nn.Module"], None]] = None,
 ) -> None:
     """
     Initializes parameter in model.
     """
     pieces = name.split(".")
-    init_func = None
+    found_init_func = init_func
 
     for piece in pieces[:-1]:
         if not hasattr(module, piece):
             raise ValueError(f"Cannot find {piece} in {module}.")
 
-        if hasattr(module, "_init_weights"):
-            init_func = getattr(module, "_init_weights")
+        if found_init_func is None and hasattr(module, "_init_weights"):
+            found_init_func = getattr(module, "_init_weights")
 
         module = getattr(module, piece)
 
-    if init_func is None:
+    if found_init_func is None:
         print(module)
         raise ValueError(f"Cannot retrieve `_init_weights` function in the parents of {module}.")
 
-    module.apply(init_func)
+    module.apply(found_init_func)
+
+
+def _init_gaussian_weights(module: "nn.Module") -> None:
+    """Default-style initialization for newly added Gaussian modules."""
+    if isinstance(module, (nn.Conv2d, nn.Linear)):
+        nn.init.kaiming_normal_(module.weight, a=0.01, mode="fan_in", nonlinearity="leaky_relu")
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.LayerNorm):
+        nn.init.ones_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.MultiheadAttention):
+        if module.in_proj_weight is not None:
+            nn.init.xavier_uniform_(module.in_proj_weight)
+        if module.in_proj_bias is not None:
+            nn.init.zeros_(module.in_proj_bias)
+    if isinstance(getattr(module, "query_tokens", None), nn.Parameter):
+        nn.init.normal_(module.query_tokens, mean=0.0, std=0.02)
 
 
 def _get_weight_loader(model) -> "VLAWeightLoader":
@@ -344,12 +364,21 @@ def load_model_weights(
                 "current_video_align_embs",
                 "future_video_align_embs",
             ]
+        gaussian_missing_markers = (
+            "gaussian_3d_adapter.",
+            "gaussian_decoder.",
+        )
         for name in parameter_names:
-            if not adanorm_time:
+            # Newly added Gaussian modules are absent from the official
+            # checkpoint. They must be re-initialized with normal random
+            # weights; leaving them after to_empty() keeps them at zero and
+            # freezes the renderer at constant output.
+            if any(marker in name for marker in gaussian_missing_markers):
+                _init_parameter(model, name, init_func=_init_gaussian_weights)
+            elif not adanorm_time:
                 _init_parameter(model, name)
-            else:
-                if not any(keyword in name for keyword in exclude_keywords):
-                    _init_parameter(model, name)
+            elif not any(keyword in name for keyword in exclude_keywords):
+                _init_parameter(model, name)
 
     # we should tie embeddings after loading weights because to_empty() leads to untied weights,
     # except for fsdp1 (custom init) and fsdp2 (swap tensor) contexts.

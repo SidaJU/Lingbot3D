@@ -100,8 +100,11 @@ class GaussianParameterDecoder(nn.Module):
         depth_raw = self.depth_head(features).squeeze(1)
 
         # GaussianDream's static decoder uses an 0..8m depth range before
-        # calibrated unprojection. A small floor avoids zero-depth singularities.
-        depth = (8.0 * torch.sigmoid(depth_raw)).clamp_min(1e-3).unsqueeze(-1)
+        # calibrated unprojection. The fused rasterizer clips everything closer
+        # than its 0.01m near plane; keeping the floor below that lets the
+        # optimizer push all Gaussians behind the near plane, which yields a
+        # fully black render with zero gradient. Keep a safe margin above near.
+        depth = (0.5 + 7.5 * torch.sigmoid(depth_raw)).unsqueeze(-1)
         rotations = raw[..., 0:4]
         rotations = rotations / rotations.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         scales = F.softplus(raw[..., 4:7]) * 0.01

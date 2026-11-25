@@ -754,6 +754,13 @@ def main():
         for epoch_step in range(start_step, args.train.train_steps):
             current_epoch_step_for_eval = epoch_step + 1
             global_step += 1
+            # Expose the optimizer step to Gaussian debug hooks inside the model.
+            # The render-loss hook lives on the inner model of the policy, not
+            # necessarily on the outer FSDP/DDP wrapper.
+            _debug_model = getattr(model, "module", model)
+            for _debug_target in (_debug_model, getattr(_debug_model, "model", None)):
+                if _debug_target is not None:
+                    _debug_target._gaussian_debug_train_step = global_step
             try:
                 micro_batches: List[Dict[str, Any]] = next(data_iterator)
             except StopIteration:

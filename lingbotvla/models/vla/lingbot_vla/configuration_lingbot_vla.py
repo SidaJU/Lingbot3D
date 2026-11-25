@@ -99,6 +99,10 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_output_grid_size: int = 256,
         gaussian_adapter_dim: int = 512,
         gaussian_adapter_heads: int = 8,
+        gaussian_decoder_token_dim: int = 2048,
+        gaussian_use_image_fusion: bool = True,
+        gaussian_image_fusion_alpha: float = 1.0,
+        gaussian_stop_grad_geometry_for_appearance: bool = True,
         gaussian_render_loss_weight: float = 0.2,
         gaussian_render_size: int = 224,
         gaussian_use_fused_rasterizer: bool = True,
@@ -134,6 +138,10 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_output_grid_size = gaussian_output_grid_size
         self.gaussian_adapter_dim = gaussian_adapter_dim
         self.gaussian_adapter_heads = gaussian_adapter_heads
+        self.gaussian_decoder_token_dim = gaussian_decoder_token_dim
+        self.gaussian_use_image_fusion = gaussian_use_image_fusion
+        self.gaussian_image_fusion_alpha = gaussian_image_fusion_alpha
+        self.gaussian_stop_grad_geometry_for_appearance = gaussian_stop_grad_geometry_for_appearance
         self.gaussian_render_loss_weight = gaussian_render_loss_weight
         self.gaussian_render_size = gaussian_render_size
         self.gaussian_use_fused_rasterizer = gaussian_use_fused_rasterizer

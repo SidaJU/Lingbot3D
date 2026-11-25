@@ -534,6 +534,12 @@ class FlowMatchingV2(FlowMatchingV1):
                 hidden_dim=vlm_hidden_size,
                 input_num_tokens=self.gaussian_num_tokens,
                 output_grid_size=int(getattr(self.config, "gaussian_output_grid_size", 256)),
+                token_dim=int(getattr(self.config, "gaussian_decoder_token_dim", 2048)),
+                use_image_fusion=bool(getattr(self.config, "gaussian_use_image_fusion", True)),
+                image_fusion_alpha=float(getattr(self.config, "gaussian_image_fusion_alpha", 1.0)),
+                stop_grad_geometry_for_appearance=bool(
+                    getattr(self.config, "gaussian_stop_grad_geometry_for_appearance", True)
+                ),
             )
             self.gaussian_renderer = DifferentiableGaussianRenderer(
                 render_size=int(getattr(self.config, "gaussian_render_size", 224)),
@@ -990,6 +996,7 @@ class FlowMatchingV2(FlowMatchingV1):
             world_to_cam=camera_extrinsics,
             target_hw=target_hw,
             view_index=primary_index,
+            images=primary_target,
         )
 
         lpips_fn = self._gaussian_lpips_holder[0] if self._gaussian_lpips_holder else None

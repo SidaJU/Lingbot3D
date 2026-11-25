@@ -148,6 +148,11 @@ train:
   gaussian_output_grid_size: 256
   gaussian_adapter_dim: 512
   gaussian_adapter_heads: 8
+  # Official GaussianDream static decoder path (future branch intentionally omitted).
+  gaussian_decoder_token_dim: 2048
+  gaussian_use_image_fusion: true
+  gaussian_image_fusion_alpha: 1.0
+  gaussian_stop_grad_geometry_for_appearance: true
   gaussian_render_loss_weight: 0.2
   gaussian_render_size: 224
   gaussian_use_fused_rasterizer: true

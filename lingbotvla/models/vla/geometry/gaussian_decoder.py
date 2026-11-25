@@ -1,4 +1,10 @@
-"""Token-to-Gaussian decoder for the first RGB reconstruction stage."""
+"""Official GaussianDream static decoder replicated for LingBot 3D prefix.
+
+Future Gaussian / velocity branches are intentionally omitted. Everything in
+the static reconstruction path follows the official PyTorch implementation:
+ConvTranspose upsample blocks, DPT-style feature fusion, GeometryHead,
+AppearanceHead with RGB fusion, SH masking and Gaussian parameter conversion.
+"""
 
 # [SIDA++] add by SidaZhu for the Gaussian parameter decoder extension.
 # Purpose: decode post-VLM gs_3d tokens into world-space Gaussian attributes,
@@ -29,12 +35,209 @@ class GaussianParameters:
     depth_map: Tensor | None = None
 
 
-class GaussianParameterDecoder(nn.Module):
-    """Decode 256 latent tokens into the full 256x256 Gaussian grid.
+class _UpsampleBlock(nn.Module):
+    """GaussianDream upsample block: ConvTranspose + GroupNorm + residual."""
 
-    The 256 tokens are the compressed prefix representation. Following the
-    static GaussianDream path, they are normalized to a 32x32 feature grid and
-    decoded with three 2x upsampling stages to 65,536 Gaussian primitives.
+    def __init__(self, in_ch: int, out_ch: int) -> None:
+        super().__init__()
+        self.up = nn.ConvTranspose2d(in_ch, out_ch, 4, stride=2, padding=1)
+        self.norm1 = nn.GroupNorm(min(32, out_ch), out_ch)
+        self.conv = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+        self.norm2 = nn.GroupNorm(min(32, out_ch), out_ch)
+        self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+
+    def forward(self, x: Tensor) -> Tensor:
+        skip = F.interpolate(self.skip(x), scale_factor=2, mode="bilinear", align_corners=False)
+        h = F.gelu(self.norm1(self.up(x)))
+        h = F.gelu(self.norm2(self.conv(h)))
+        return h + skip
+
+
+class _FeatureFusionBlock(nn.Module):
+    """GaussianDream DPT-style multi-scale feature fusion block."""
+
+    def __init__(self, features: int, has_residual: bool = True) -> None:
+        super().__init__()
+        self.has_residual = bool(has_residual)
+        if self.has_residual:
+            self.residual_conv = nn.Sequential(
+                nn.Conv2d(features, features, 3, padding=1, bias=True),
+                nn.GroupNorm(min(32, features), features),
+                nn.GELU(),
+                nn.Conv2d(features, features, 3, padding=1, bias=True),
+            )
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(features, features, 3, padding=1, bias=True),
+            nn.GroupNorm(min(32, features), features),
+            nn.GELU(),
+            nn.Conv2d(features, features, 1, bias=True),
+        )
+
+    def forward(self, x: Tensor, residual: Tensor | None = None, size=None) -> Tensor:
+        if self.has_residual and residual is not None:
+            if residual.shape[2:] != x.shape[2:]:
+                residual = F.interpolate(
+                    residual, size=x.shape[2:], mode="bilinear", align_corners=True
+                )
+            x = x + self.residual_conv(residual)
+        x = self.fusion_conv(x)
+        if size is not None and x.shape[2:] != size:
+            x = F.interpolate(x, size=size, mode="bilinear", align_corners=True)
+        return x
+
+
+class SharedGaussianBackbone(nn.Module):
+    """Official GaussianDream shared token-to-feature backbone (static path)."""
+
+    def __init__(self, token_dim: int = 2048) -> None:
+        super().__init__()
+        self.layer1 = _UpsampleBlock(token_dim, 512)
+        self.layer2 = _UpsampleBlock(512, 256)
+        self.layer3 = _UpsampleBlock(256, 128)
+
+        self.fusion1 = _FeatureFusionBlock(128, has_residual=False)
+        self.fusion2 = _FeatureFusionBlock(128, has_residual=True)
+        self.fusion3 = _FeatureFusionBlock(128, has_residual=True)
+
+        self.proj_feat2 = nn.Conv2d(256, 128, 1)
+        self.proj_feat1 = nn.Conv2d(512, 128, 1)
+
+    def forward(self, token_grid: Tensor) -> Tensor:
+        feat1 = self.layer1(token_grid)
+        feat2 = self.layer2(feat1)
+        feat3 = self.layer3(feat2)
+
+        fused = self.fusion1(feat3)
+        fused = self.fusion2(fused, residual=self.proj_feat2(feat2))
+        fused = self.fusion3(fused, residual=self.proj_feat1(feat1))
+        return fused
+
+
+class GeometryHead(nn.Module):
+    """Official GaussianDream geometry-only head."""
+
+    def __init__(self, predict_depth: bool = True, feature_dim: int = 128) -> None:
+        super().__init__()
+        self.predict_depth = bool(predict_depth)
+        self.feature_dim = int(feature_dim)
+        self.param_head = nn.Conv2d(self.feature_dim, 8, 3, padding=1)
+
+        if self.predict_depth:
+            self.depth_refine = nn.Sequential(
+                nn.Conv2d(feature_dim, 64, 3, padding=1),
+                nn.GroupNorm(min(32, 64), 64),
+                nn.GELU(),
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.GroupNorm(min(32, 64), 64),
+                nn.GELU(),
+                nn.Conv2d(64, 1, 3, padding=1),
+            )
+            for module in self.depth_refine.modules():
+                if isinstance(module, nn.Conv2d):
+                    nn.init.xavier_uniform_(module.weight, gain=0.01)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+
+        nn.init.xavier_uniform_(self.param_head.weight, gain=0.01)
+        nn.init.zeros_(self.param_head.bias)
+
+    def forward(self, shared_features: Tensor) -> dict[str, Tensor]:
+        result = {"geom_params": self.param_head(shared_features)}
+        if self.predict_depth:
+            result["depth"] = self.depth_refine(shared_features)
+        return result
+
+
+class AppearanceHead(nn.Module):
+    """Official GaussianDream appearance/SH head with RGB image fusion."""
+
+    def __init__(
+        self,
+        use_image_fusion: bool = True,
+        img_dim: int = 3,
+        feature_dim: int = 128,
+        image_fusion_alpha: float = 1.0,
+        stop_grad_geometry: bool = True,
+    ) -> None:
+        super().__init__()
+        self.use_image_fusion = bool(use_image_fusion)
+        self.feature_dim = int(feature_dim)
+        self.image_fusion_alpha = float(image_fusion_alpha)
+        self.stop_grad_geometry = bool(stop_grad_geometry)
+
+        if self.use_image_fusion:
+            self.img_merger = nn.Sequential(
+                nn.Conv2d(img_dim, feature_dim, 7, padding=3),
+                nn.GELU(),
+            )
+        self.sh_head = nn.Conv2d(feature_dim, 9, 3, padding=1)
+        nn.init.xavier_uniform_(self.sh_head.weight, gain=0.01)
+        nn.init.zeros_(self.sh_head.bias)
+
+    def set_image_fusion_enabled(self, enabled: bool) -> None:
+        self.use_image_fusion = bool(enabled)
+
+    def forward(self, shared_features: Tensor, images: Tensor | None = None) -> Tensor:
+        geom_context = shared_features.detach() if self.stop_grad_geometry else shared_features
+        appearance_features = geom_context
+        if self.use_image_fusion and images is not None:
+            if images.shape[2:] != geom_context.shape[2:]:
+                images = F.interpolate(
+                    images, size=geom_context.shape[2:], mode="bilinear", align_corners=True
+                )
+            appearance_features = appearance_features + self.image_fusion_alpha * self.img_merger(images)
+        return self.sh_head(appearance_features)
+
+
+class StaticGaussianHead(nn.Module):
+    """Official GaussianDream static reconstruction head, no future branch."""
+
+    def __init__(
+        self,
+        use_image_fusion: bool = True,
+        img_dim: int = 3,
+        predict_depth: bool = True,
+        image_fusion_alpha: float = 1.0,
+        stop_grad_geometry_for_appearance: bool = True,
+    ) -> None:
+        super().__init__()
+        self.use_image_fusion = bool(use_image_fusion)
+        self.predict_depth = bool(predict_depth)
+        self.geometry_head = GeometryHead(predict_depth=predict_depth)
+        self.appearance_head = AppearanceHead(
+            use_image_fusion=use_image_fusion,
+            img_dim=img_dim,
+            image_fusion_alpha=image_fusion_alpha,
+            stop_grad_geometry=stop_grad_geometry_for_appearance,
+        )
+        self.register_buffer(
+            "sh_mask",
+            torch.tensor([1.0, 1.0, 1.0, 0.025, 0.025, 0.025, 0.025, 0.025, 0.025], dtype=torch.float32),
+            persistent=False,
+        )
+
+    def set_image_fusion_enabled(self, enabled: bool) -> None:
+        self.use_image_fusion = bool(enabled)
+        self.appearance_head.set_image_fusion_enabled(enabled)
+
+    def forward(self, shared_features: Tensor, images: Tensor | None = None) -> dict[str, Tensor]:
+        geometry_output = self.geometry_head(shared_features)
+        sh_logits = self.appearance_head(shared_features, images=images)
+        result = {
+            "gaussian_params": torch.cat([geometry_output["geom_params"], sh_logits], dim=1),
+        }
+        if self.predict_depth:
+            result["depth"] = geometry_output["depth"]
+        return result
+
+
+class GaussianParameterDecoder(nn.Module):
+    """LingBot adapter around the official GaussianDream static decoder.
+
+    LingBot's VLM hidden width is usually 2560 while GaussianDream's official
+    backbone expects 2048 channels, so the only non-official layer is the
+    documented 1x1 input projection. After that projection, the backbone and
+    static heads match the official implementation.
     """
 
     def __init__(
@@ -42,6 +245,10 @@ class GaussianParameterDecoder(nn.Module):
         hidden_dim: int,
         input_num_tokens: int = 256,
         output_grid_size: int = 256,
+        token_dim: int = 2048,
+        use_image_fusion: bool = True,
+        image_fusion_alpha: float = 1.0,
+        stop_grad_geometry_for_appearance: bool = True,
     ) -> None:
         super().__init__()
         self.input_num_tokens = int(input_num_tokens)
@@ -52,34 +259,23 @@ class GaussianParameterDecoder(nn.Module):
             raise ValueError("Gaussian input tokens must form a square grid")
         if self.output_grid_size != 256:
             raise ValueError("GaussianDream static decoding uses a 256x256 Gaussian grid")
-        self.input_grid_size = input_grid_size
 
+        self.input_grid_size = input_grid_size
+        self.token_dim = int(token_dim)
         self.norm = nn.LayerNorm(hidden_dim)
-        # [SIDA++] Match GaussianDream's static decoder: canonical 32x32
-        # features followed by 64x64, 128x128 and 256x256 upsampling.
-        self.input_proj = nn.Conv2d(hidden_dim, 512, kernel_size=1)
-        self.backbone = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.GELU(),
+        # LingBot-only 2560 -> 2048 interface from the architecture plan.
+        self.input_proj = nn.Conv2d(hidden_dim, self.token_dim, kernel_size=1)
+        self.shared_backbone = SharedGaussianBackbone(token_dim=self.token_dim)
+        self.static_head = StaticGaussianHead(
+            use_image_fusion=bool(use_image_fusion),
+            img_dim=3,
+            predict_depth=True,
+            image_fusion_alpha=float(image_fusion_alpha),
+            stop_grad_geometry_for_appearance=bool(stop_grad_geometry_for_appearance),
         )
-        # rot(4) + scale(3) + opacity(1) + first-order SH(12).
-        self.param_head = nn.Conv2d(128, 20, kernel_size=3, padding=1)
-        # GaussianDream initializes its appearance/SH head with xavier gain 0.01
-        # and zero bias. Geometry channels keep their default initialization.
-        nn.init.xavier_uniform_(self.param_head.weight[8:20], gain=0.01)
-        nn.init.zeros_(self.param_head.bias[8:20])
-        self.depth_head = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(64, 1, kernel_size=3, padding=1),
-        )
+
+    def set_image_fusion_enabled(self, enabled: bool) -> None:
+        self.static_head.set_image_fusion_enabled(enabled)
 
     def forward(
         self,
@@ -88,6 +284,7 @@ class GaussianParameterDecoder(nn.Module):
         world_to_cam: Tensor | None = None,
         target_hw: tuple[int, int] | None = None,
         view_index: int = 0,
+        images: Tensor | None = None,
     ) -> GaussianParameters:
         if tokens.ndim != 3 or tokens.shape[1] != self.input_num_tokens:
             raise ValueError(
@@ -100,28 +297,46 @@ class GaussianParameterDecoder(nn.Module):
             tokens.shape[0], tokens.shape[2], self.input_grid_size, self.input_grid_size
         )
         token_grid = F.interpolate(token_grid, size=(32, 32), mode="bilinear", align_corners=False)
-        features = self.backbone(self.input_proj(token_grid))
-        raw = self.param_head(features).permute(0, 2, 3, 1)
-        depth_raw = self.depth_head(features).squeeze(1)
+        token_grid = self.input_proj(token_grid)
 
-        # GaussianDream's static decoder uses an 0..8m depth range before
-        # calibrated unprojection. The fused rasterizer clips everything closer
-        # than its 0.01m near plane; keeping the floor below that lets the
-        # optimizer push all Gaussians behind the near plane, which yields a
-        # fully black render with zero gradient. Keep a safe margin above near.
-        depth = (0.5 + 7.5 * torch.sigmoid(depth_raw)).unsqueeze(-1)
-        rotations = raw[..., 0:4]
-        rotations = rotations / rotations.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-        scales = F.softplus(raw[..., 4:7]) * 0.01
-        opacities = torch.sigmoid(raw[..., 7:8])
+        # Empty cache in case a future branch is later re-enabled.
+        fusion_images = None
+        if images is not None:
+            fusion_images = images.to(device=token_grid.device, dtype=decoder_dtype)
+            if fusion_images.ndim == 5:
+                view = int(view_index)
+                if not 0 <= view < fusion_images.shape[1]:
+                    raise IndexError(f"view_index={view} outside image views={fusion_images.shape[1]}")
+                fusion_images = fusion_images[:, view]
+            if fusion_images.ndim != 4 or fusion_images.shape[1] != 3:
+                raise ValueError(f"appearance fusion images must be [B,3,H,W], got {tuple(fusion_images.shape)}")
+            if fusion_images.detach().amax() > 1.5:
+                fusion_images = fusion_images / 255.0
 
-        # Four SH coefficients per channel: DC + first-order SH. GaussianDream
-        # outputs 9 coefficients (DC RGB + six first-order) and pads the fourth
-        # coefficient row with zeros before reshaping to [N, 4, 3]. Suppress all
-        # view-dependent coefficients, not just one of them.
-        sh = raw[..., 8:20].reshape(tokens.shape[0], self.num_gaussians, 4, 3)
-        sh_mask = sh.new_tensor([1.0, 0.025, 0.025, 0.0]).view(1, 1, 4, 1)
-        sh = sh * sh_mask
+        shared_features = self.shared_backbone(token_grid)
+        decoder_output = self.static_head(shared_features, images=fusion_images)
+        raw = decoder_output["gaussian_params"]
+        rot_raw, scale_raw, opa_raw, sh_raw = raw.split([4, 3, 1, 9], dim=1)
+
+        depth_logits = decoder_output["depth"].squeeze(1)
+        # Official static depth parameterization: 0..8m.
+        depth_map = 8.0 * torch.sigmoid(depth_logits)
+
+        H_dec, W_dec = depth_map.shape[-2:]
+        batch = depth_map.shape[0]
+        rot_maps = rot_raw.permute(0, 2, 3, 1)
+        rot_maps = rot_maps / (rot_maps.norm(dim=-1, keepdim=True) + 1e-8)
+        scale_maps = F.softplus(scale_raw.permute(0, 2, 3, 1), beta=1) * 0.01
+        opacity_maps = torch.sigmoid(opa_raw.permute(0, 2, 3, 1))
+
+        sh_maps = sh_raw.permute(0, 2, 3, 1)
+        sh_mask = self.static_head.sh_mask.view(1, 1, 1, 9)
+        sh_maps = sh_maps * sh_mask
+        sh_flat = sh_maps.reshape(batch, self.num_gaussians, 9)
+        # Official renderer pads 9 SH coefficients to 12 and reshapes to [N,4,3].
+        sh_padded = sh_flat.new_zeros(batch, self.num_gaussians, 12)
+        sh_padded[..., :9] = sh_flat
+        sh = sh_padded.reshape(batch, self.num_gaussians, 4, 3)
         colors = torch.sigmoid(sh[..., 0, :])
 
         if intrinsics is not None or world_to_cam is not None:
@@ -142,32 +357,26 @@ class GaussianParameterDecoder(nn.Module):
             )
             u = (xs.reshape(1, -1) + 0.5) * (target_w / self.output_grid_size)
             v = (ys.reshape(1, -1) + 0.5) * (target_h / self.output_grid_size)
-            z = depth.reshape(tokens.shape[0], -1)
+            z = depth_map.reshape(batch, -1)
             x = (u - k[:, None, 0, 2]) / k[:, None, 0, 0] * z
             y = (v - k[:, None, 1, 2]) / k[:, None, 1, 1] * z
             xyz_cam = torch.stack((x, y, z), dim=-1)
-            # [SIDA++] PyTorch does not implement matrix inverse for BF16;
-            # keep camera calibration numerically stable in FP32 and cast the
-            # resulting transform back to the decoder dtype.
             cam_to_world = torch.linalg.inv(t_world_cam.float()).to(decoder_dtype)
             means = torch.einsum("bij,bnj->bni", cam_to_world[:, :3, :3], xyz_cam)
             means = means + cam_to_world[:, None, :3, 3]
+            means = torch.clamp(means, min=-100.0, max=100.0)
+            means = torch.where(torch.isnan(means) | torch.isinf(means), torch.zeros_like(means), means)
         else:
-            # Standalone decoder tests still receive a finite tensor, while all
-            # training renders use calibrated K/T above.
-            means = torch.zeros(
-                (tokens.shape[0], self.num_gaussians, 3),
-                device=tokens.device,
-                dtype=decoder_dtype,
-            )
+            means = torch.zeros((batch, self.num_gaussians, 3), device=tokens.device, dtype=decoder_dtype)
 
+        scales = scale_maps.reshape(batch, self.num_gaussians, 3).clamp(min=1e-7, max=10.0)
         return GaussianParameters(
             means=means,
-            scales=scales.reshape(tokens.shape[0], self.num_gaussians, 3),
-            rotations=rotations.reshape(tokens.shape[0], self.num_gaussians, 4),
+            scales=scales,
+            rotations=rot_maps.reshape(batch, self.num_gaussians, 4),
             colors=colors,
-            opacities=opacities.reshape(tokens.shape[0], self.num_gaussians, 1),
+            opacities=opacity_maps.reshape(batch, self.num_gaussians, 1),
             sh=sh,
-            depth_map=depth,
+            depth_map=depth_map.unsqueeze(1),
         )
 # [SIDA--]

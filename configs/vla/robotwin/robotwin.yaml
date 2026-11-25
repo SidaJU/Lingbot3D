@@ -180,7 +180,7 @@ train:
   gaussian_use_lpips: false
   gaussian_lpips_weight: 0.1
   gaussian_lpips_net: vgg
-  gaussian_lpips_cache_dir: null
+  gaussian_lpips_cache_dir: ""
   gaussian_vggt_model_path: /pfs/slfan/SIDAZHU/models/VGGT-1B/model.pt
   gaussian_vggt_image_size: 518
   gaussian_vggt_feature_dim: 2048

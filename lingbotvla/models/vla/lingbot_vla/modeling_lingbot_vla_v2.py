@@ -1130,7 +1130,9 @@ class FlowMatchingV2(FlowMatchingV1):
                 pseudo_depth = pseudo_depth[:, primary_index]
                 if pseudo_depth.ndim == 4 and pseudo_depth.shape[-1] == 1:
                     pseudo_depth = pseudo_depth.permute(0, 3, 1, 2)
-            if pseudo_conf is not None and pseudo_conf.ndim == 5:
+            # VGGT returns depth_conf as [B,S,H,W], while some wrappers keep a
+            # trailing channel as [B,S,H,W,1]. Select the primary view for both.
+            if pseudo_conf is not None and pseudo_conf.ndim in (4, 5):
                 if primary_index >= pseudo_conf.shape[1]:
                     raise ValueError(f"VGGT depth confidence view {primary_index} is absent")
                 pseudo_conf = pseudo_conf[:, primary_index]

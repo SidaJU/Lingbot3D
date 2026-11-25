@@ -24,8 +24,10 @@ def _ssim_loss(prediction: torch.Tensor, target: torch.Tensor, window_size: int 
     sigma_cross = F.avg_pool2d(prediction * target, window_size, stride=1, padding=padding) - mu_pred * mu_target
     c1, c2 = 0.01**2, 0.03**2
     numerator = (2 * mu_pred * mu_target + c1) * (2 * sigma_cross + c2)
-    denominator = (mu_pred.square() + mu_target.square() + c1) * (sigma_pred + sigma_target + c2)
-    return (1.0 - numerator / denominator.clamp_min(1e-6)).mean()
+    denominator = (mu_pred.square() + mu_target.square() + c1) * (sigma_pred + sigma_target + c2) + 1e-8
+    ssim_map = numerator / denominator
+    # Match GaussianDream: D-SSIM is scaled to [0, 1] before weighting.
+    return torch.clamp((1.0 - ssim_map) / 2.0, 0.0, 1.0).mean()
 
 
 def compute_rgb_render_loss(rendered_rgb: torch.Tensor, target_rgb: torch.Tensor) -> torch.Tensor:

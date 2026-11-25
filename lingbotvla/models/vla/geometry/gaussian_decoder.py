@@ -110,9 +110,12 @@ class GaussianParameterDecoder(nn.Module):
         scales = F.softplus(raw[..., 4:7]) * 0.01
         opacities = torch.sigmoid(raw[..., 7:8])
 
-        # Four SH coefficients per channel: DC + first-order SH.
+        # Four SH coefficients per channel: DC + first-order SH. GaussianDream
+        # outputs 9 coefficients (DC RGB + six first-order) and pads the fourth
+        # coefficient row with zeros before reshaping to [N, 4, 3]. Suppress all
+        # view-dependent coefficients, not just one of them.
         sh = raw[..., 8:20].reshape(tokens.shape[0], self.num_gaussians, 4, 3)
-        sh_mask = sh.new_tensor([1.0, 1.0, 1.0, 0.025]).view(1, 1, 4, 1)
+        sh_mask = sh.new_tensor([1.0, 0.025, 0.025, 0.0]).view(1, 1, 4, 1)
         sh = sh * sh_mask
         colors = torch.sigmoid(sh[..., 0, :])
 

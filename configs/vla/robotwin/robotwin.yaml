@@ -151,6 +151,24 @@ train:
   gaussian_render_loss_weight: 0.2
   gaussian_render_size: 224
   gaussian_use_fused_rasterizer: true
+  # GaussianDream-style multi-view render supervision. Views are selected from
+  # the ordered camera list above: top, left wrist, right wrist.
+  gaussian_render_views:
+    - camera_top
+    - camera_wrist_left
+    - camera_wrist_right
+  gaussian_scale_reg_weight: 0.001
+  gaussian_opacity_reg_weight: 0.01
+  gaussian_edge_smooth_weight: 0.01
+  # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after
+  # `pip install lpips` succeeds on the training machine.
+  # If pre-downloading the backbone, place it at:
+  #   ${gaussian_lpips_cache_dir}/hub/checkpoints/vgg16-397923af.pth
+  # and point gaussian_lpips_cache_dir to that cache root.
+  gaussian_use_lpips: false
+  gaussian_lpips_weight: 0.1
+  gaussian_lpips_net: vgg
+  gaussian_lpips_cache_dir: null
   gaussian_vggt_model_path: /pfs/slfan/SIDAZHU/models/VGGT-1B/model.pt
   gaussian_vggt_image_size: 518
   gaussian_vggt_feature_dim: 2048

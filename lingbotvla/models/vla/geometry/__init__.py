@@ -20,7 +20,12 @@ from .gaussian_prefix import Gaussian3DPrefixAdapter
 from .gaussian_decoder import GaussianParameterDecoder, GaussianParameters
 from .gaussian_renderer import DifferentiableGaussianRenderer
 from .vggt_adapter import VGGTFeatureEncoder
-from .render_loss import compute_rgb_render_loss
+from .render_loss import (
+    build_lpips_fn,
+    compute_edge_smooth_loss,
+    compute_gaussian_regularization,
+    compute_rgb_render_loss,
+)
 
 __all__ = [
     "CameraFrameMetadata",
@@ -31,6 +36,9 @@ __all__ = [
     "DifferentiableGaussianRenderer",
     "VGGTFeatureEncoder",
     "canonical_camera_name",
+    "build_lpips_fn",
+    "compute_edge_smooth_loss",
+    "compute_gaussian_regularization",
     "compute_rgb_render_loss",
     "get_camera_params_for_view",
     "load_camera_metadata",

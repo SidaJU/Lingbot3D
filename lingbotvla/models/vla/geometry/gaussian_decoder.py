@@ -26,6 +26,7 @@ class GaussianParameters:
     colors: Tensor
     opacities: Tensor
     sh: Tensor
+    depth_map: Tensor | None = None
 
 
 class GaussianParameterDecoder(nn.Module):
@@ -70,6 +71,10 @@ class GaussianParameterDecoder(nn.Module):
         )
         # rot(4) + scale(3) + opacity(1) + first-order SH(12).
         self.param_head = nn.Conv2d(128, 20, kernel_size=3, padding=1)
+        # GaussianDream initializes its appearance/SH head with xavier gain 0.01
+        # and zero bias. Geometry channels keep their default initialization.
+        nn.init.xavier_uniform_(self.param_head.weight[8:20], gain=0.01)
+        nn.init.zeros_(self.param_head.bias[8:20])
         self.depth_head = nn.Sequential(
             nn.Conv2d(128, 64, kernel_size=3, padding=1),
             nn.GELU(),
@@ -163,5 +168,6 @@ class GaussianParameterDecoder(nn.Module):
             colors=colors,
             opacities=opacities.reshape(tokens.shape[0], self.num_gaussians, 1),
             sh=sh,
+            depth_map=depth,
         )
 # [SIDA--]

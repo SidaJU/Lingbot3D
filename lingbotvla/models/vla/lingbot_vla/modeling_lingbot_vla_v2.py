@@ -45,6 +45,9 @@ from lingbotvla.models.vla.geometry import (
     DifferentiableGaussianRenderer,
     Gaussian3DPrefixAdapter,
     GaussianParameterDecoder,
+    build_lpips_fn,
+    compute_edge_smooth_loss,
+    compute_gaussian_regularization,
     compute_rgb_render_loss,
     VGGTFeatureEncoder,
 )
@@ -536,11 +539,22 @@ class FlowMatchingV2(FlowMatchingV1):
                 render_size=int(getattr(self.config, "gaussian_render_size", 224)),
                 use_fused=bool(getattr(self.config, "gaussian_use_fused_rasterizer", True)),
             )
+            # Keep LPIPS in a plain list so FSDP/checkpoint code does not treat
+            # the frozen perceptual network as a trainable submodule.
+            self._gaussian_lpips_holder = []
+            if bool(getattr(self.config, "gaussian_use_lpips", False)):
+                lpips_fn = build_lpips_fn(
+                    net=str(getattr(self.config, "gaussian_lpips_net", "vgg")),
+                    cache_dir=getattr(self.config, "gaussian_lpips_cache_dir", None),
+                )
+                if lpips_fn is not None:
+                    self._gaussian_lpips_holder.append(lpips_fn)
         else:
             self.gaussian_vggt = None
             self.gaussian_3d_adapter = None
             self.gaussian_decoder = None
             self.gaussian_renderer = None
+            self._gaussian_lpips_holder = []
         # [SIDA--]
 
         self.config.align_params = getattr(self.config, "align_params", None) or {}
@@ -901,7 +915,7 @@ class FlowMatchingV2(FlowMatchingV1):
         return hidden_states[:, start:end, :]
     # [SIDA--]
 
-    # [SIDA++] add by SidaZhu for Gaussian token decode and RGB render loss
+    # [SIDA++] add by SidaZhu for Gaussian token decode and multi-view RGB render loss
     def _gaussian_rgb_render_loss(
         self,
         hidden_states,
@@ -911,7 +925,7 @@ class FlowMatchingV2(FlowMatchingV1):
     ):
         weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
         if not self.enable_gaussian_3d or weight <= 0.0:
-            return hidden_states.new_zeros(())
+            return hidden_states.new_zeros(()), {}
         if camera_intrinsics is None or camera_extrinsics is None or render_target_images is None:
             raise ValueError(
                 "Gaussian RGB loss requires camera_intrinsics, camera_extrinsics, and render_target_images"
@@ -922,40 +936,119 @@ class FlowMatchingV2(FlowMatchingV1):
             render_target_images = render_target_images.unsqueeze(1)
         if render_target_images.ndim != 5:
             raise ValueError(f"render_target_images must be [B,V,C,H,W], got {tuple(render_target_images.shape)}")
-        view_name = str(getattr(self.config, "gaussian_render_view", "camera_top"))
-        view_index = {"camera_top": 0, "camera_wrist_left": 1, "camera_wrist_right": 2}.get(view_name)
-        if view_index is None:
-            raise ValueError(f"Unsupported Gaussian render view: {view_name}")
-        if view_index >= render_target_images.shape[1]:
-            raise ValueError(f"Render view {view_name} is absent from target images")
+
+        view_name_to_index = {
+            "camera_top": 0,
+            "camera_wrist_left": 1,
+            "camera_wrist_right": 2,
+            "agent": 0,
+            "wrist": 1,
+            "wrist_left": 1,
+            "wrist_right": 2,
+        }
+        render_views = getattr(self.config, "gaussian_render_views", None)
+        if render_views is None or len(render_views) == 0:
+            render_views = [str(getattr(self.config, "gaussian_render_view", "camera_top"))]
+        if isinstance(render_views, str):
+            render_views = [render_views]
+        view_specs = []
+        for view_name in render_views:
+            view_name = str(view_name)
+            view_index = view_name_to_index.get(view_name)
+            if view_index is None:
+                raise ValueError(f"Unsupported Gaussian render view: {view_name}")
+            if view_index >= render_target_images.shape[1]:
+                logger.warning("Skip Gaussian render view %s: absent from target images", view_name)
+                continue
+            if view_index >= camera_intrinsics.shape[1] or view_index >= camera_extrinsics.shape[1]:
+                logger.warning("Skip Gaussian render view %s: absent from camera metadata", view_name)
+                continue
+            if any(idx == view_index for _, idx in view_specs):
+                continue
+            view_specs.append((view_name, view_index))
+        if not view_specs:
+            raise ValueError("No valid Gaussian render views configured")
+
         tokens = self._gaussian_3d_task_tokens(hidden_states)
-        target = render_target_images[:, view_index].float().to(hidden_states.device)
-        if target.shape[1] != 3:
-            raise ValueError(f"render target must have 3 channels, got {target.shape[1]}")
-        if target.detach().amax() > 1.5:
-            target = target / 255.0
-        target_hw = (target.shape[-2], target.shape[-1])
+        targets = {}
+        for view_name, view_index in view_specs:
+            target = render_target_images[:, view_index].float().to(hidden_states.device)
+            if target.shape[1] != 3:
+                raise ValueError(f"render target {view_name} must have 3 channels, got {target.shape[1]}")
+            if target.detach().amax() > 1.5:
+                target = target / 255.0
+            targets[view_name] = target
+
+        # Decode one shared world-space Gaussian field using the primary view's
+        # calibration, then render it from every configured camera view.
+        primary_name, primary_index = view_specs[0]
+        primary_target = targets[primary_name]
+        target_hw = (primary_target.shape[-2], primary_target.shape[-1])
         gaussian_params = self.gaussian_decoder(
             tokens,
             intrinsics=camera_intrinsics,
             world_to_cam=camera_extrinsics,
             target_hw=target_hw,
-            view_index=view_index,
+            view_index=primary_index,
         )
-        rendered = self.gaussian_renderer(
-            gaussian_params,
-            camera_intrinsics,
-            camera_extrinsics,
-            target_hw=target_hw,
-            view_index=view_index,
+
+        lpips_fn = self._gaussian_lpips_holder[0] if self._gaussian_lpips_holder else None
+        if lpips_fn is not None:
+            lpips_device = next(lpips_fn.parameters()).device
+            if lpips_device != hidden_states.device:
+                lpips_fn = lpips_fn.to(hidden_states.device)
+                self._gaussian_lpips_holder[0] = lpips_fn
+        lpips_weight = float(getattr(self.config, "gaussian_lpips_weight", 0.0))
+
+        view_losses = []
+        debug_entries = []
+        metrics = {}
+        for view_name, view_index in view_specs:
+            target = targets[view_name]
+            view_hw = (target.shape[-2], target.shape[-1])
+            rendered = self.gaussian_renderer(
+                gaussian_params,
+                camera_intrinsics,
+                camera_extrinsics,
+                target_hw=view_hw,
+                view_index=view_index,
+            )
+            target_resized = F.interpolate(
+                target, size=rendered.shape[-2:], mode="bilinear", align_corners=False
+            )
+            view_loss = compute_rgb_render_loss(
+                rendered,
+                target_resized,
+                lpips_fn=lpips_fn,
+                lpips_weight=lpips_weight,
+            )
+            view_losses.append(view_loss)
+            metrics[f"gaussian_render/loss_{view_name}"] = view_loss.detach()
+            debug_entries.append((view_name, rendered, target_resized, view_loss))
+
+        # Match GaussianDream: average photometric loss across views.
+        render_loss = torch.stack(view_losses).mean()
+
+        # GaussianDream helper also adds scale/opacity regularization and
+        # edge-aware depth smoothness before the outer render loss weight.
+        reg_loss = compute_gaussian_regularization(
+            gaussian_params.scales,
+            gaussian_params.opacities,
+            lambda_scale=float(getattr(self.config, "gaussian_scale_reg_weight", 0.001)),
+            lambda_opacity=float(getattr(self.config, "gaussian_opacity_reg_weight", 0.01)),
         )
-        target = F.interpolate(target, size=rendered.shape[-2:], mode="bilinear", align_corners=False)
-        render_loss = compute_rgb_render_loss(rendered, target)
+        metrics["gaussian_render/reg_loss"] = reg_loss.detach()
+        render_loss = render_loss + reg_loss
+
+        edge_weight = float(getattr(self.config, "gaussian_edge_smooth_weight", 0.01))
+        depth_map = getattr(gaussian_params, "depth_map", None)
+        if depth_map is not None and edge_weight > 0.0:
+            edge_loss = edge_weight * compute_edge_smooth_loss(targets[primary_name], depth_map)
+            metrics["gaussian_render/edge_smooth_loss"] = edge_loss.detach()
+            render_loss = render_loss + edge_loss
+        metrics["gaussian_render/total_raw"] = render_loss.detach()
 
         # [SIDA++] optional diagnostics for the Gaussian integration stage.
-        # LINGBOT_GAUSSIAN_DEBUG=1 enables finite-value stats and image dumps.
-        # LINGBOT_GAUSSIAN_DEBUG_LIMIT controls the first N calls; optionally
-        # LINGBOT_GAUSSIAN_SAVE_INTERVAL dumps once per N optimizer steps.
         debug_enabled = os.environ.get("LINGBOT_GAUSSIAN_DEBUG", "0").lower() in {"1", "true", "yes"}
         debug_index = int(getattr(self, "_gaussian_debug_index", 0))
         debug_limit = int(os.environ.get("LINGBOT_GAUSSIAN_DEBUG_LIMIT", "3"))
@@ -979,40 +1072,46 @@ class FlowMatchingV2(FlowMatchingV1):
                 )
 
             logger.warning(
-                "[SIDA-GAUSSIAN-DEBUG] step=%d idx=%d tokens: %s",
-                current_step, debug_index, _stats(tokens),
+                "[SIDA-GAUSSIAN-DEBUG] step=%d idx=%d views=%s tokens: %s",
+                current_step, debug_index, [name for name, _ in view_specs], _stats(tokens),
             )
             for name, value in vars(gaussian_params).items():
                 logger.warning("[SIDA-GAUSSIAN-DEBUG] gaussian.%s: %s", name, _stats(value))
-            logger.warning(
-                "[SIDA-GAUSSIAN-DEBUG] step=%d rendered: %s target: %s raw_loss=%.6g weighted_loss=%.6g",
-                current_step, _stats(rendered), _stats(target), render_loss.item(), (weight * render_loss).item(),
-            )
+            for view_name, rendered, target, view_loss in debug_entries:
+                logger.warning(
+                    "[SIDA-GAUSSIAN-DEBUG] step=%d view=%s rendered: %s target: %s raw_loss=%.6g weighted_loss=%.6g",
+                    current_step, view_name, _stats(rendered), _stats(target),
+                    view_loss.item(), (weight * view_loss).item(),
+                )
             try:
                 from PIL import Image
 
                 debug_dir = os.environ.get("LINGBOT_GAUSSIAN_DEBUG_DIR", "./gaussian_debug")
                 os.makedirs(debug_dir, exist_ok=True)
                 prefix = f"step{current_step:06d}_idx{debug_index:03d}" if current_step >= 0 else f"idx{debug_index:03d}"
-                images_u8 = {}
-                for name, image in (("rendered", rendered), ("target", target)):
-                    image_u8 = (
-                        image[0].detach().float().clamp(0.0, 1.0)
-                        .permute(1, 2, 0).mul(255.0).round().byte().cpu().numpy()
-                    )
-                    images_u8[name] = Image.fromarray(image_u8)
-                    images_u8[name].save(os.path.join(debug_dir, f"{prefix}_{name}.png"))
-                compare = Image.new("RGB", (images_u8["target"].width * 2, images_u8["target"].height))
-                compare.paste(images_u8["target"], (0, 0))
-                compare.paste(images_u8["rendered"], (images_u8["target"].width, 0))
-                compare.save(os.path.join(debug_dir, f"{prefix}_compare.png"))
+                for view_name, rendered, target, _ in debug_entries:
+                    images_u8 = {}
+                    for image_name, image in (("rendered", rendered), ("target", target)):
+                        image_u8 = (
+                            image[0].detach().float().clamp(0.0, 1.0)
+                            .permute(1, 2, 0).mul(255.0).round().byte().cpu().numpy()
+                        )
+                        images_u8[image_name] = Image.fromarray(image_u8)
+                        images_u8[image_name].save(
+                            os.path.join(debug_dir, f"{prefix}_{view_name}_{image_name}.png")
+                        )
+                    compare = Image.new("RGB", (images_u8["target"].width * 2, images_u8["target"].height))
+                    compare.paste(images_u8["target"], (0, 0))
+                    compare.paste(images_u8["rendered"], (images_u8["target"].width, 0))
+                    compare.save(os.path.join(debug_dir, f"{prefix}_{view_name}_compare.png"))
             except Exception as exc:
                 logger.warning("[SIDA-GAUSSIAN-DEBUG] image save failed: %s", exc)
             if is_first_dump:
                 self._gaussian_debug_index = debug_index + 1
             if is_interval_dump:
                 self._gaussian_debug_saved_step = current_step
-        return weight * render_loss
+
+        return weight * render_loss, metrics
     # [SIDA--]
 
     def forward(
@@ -1097,13 +1196,13 @@ class FlowMatchingV2(FlowMatchingV1):
             visual_pos_masks=visual_pos_masks,
             deepstack_visual_embeds=deepstack_visual_embeds,
         )
-        loss_gaussian = self._gaussian_rgb_render_loss(
+        loss_gaussian, gaussian_render_metrics = self._gaussian_rgb_render_loss(
             outputs_embeds,
             camera_intrinsics=camera_intrinsics,
             camera_extrinsics=camera_extrinsics,
             render_target_images=render_target_images,
         )
-        align_metrics = {}
+        align_metrics = dict(gaussian_render_metrics)
         if self.use_depth_align:
             loss_depth, loss_future_depth, depth_preds, future_depth_preds = self.depth_emb_forward(outputs_embeds, depth_targets, img_masks,future_depth_targets,)
             loss_depth = loss_depth * self.config.align_params["depth_loss_weight"]

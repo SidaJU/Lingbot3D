@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -19,6 +20,34 @@ import torch.nn.functional as F
 
 
 # [SIDA++] add by SidaZhu for optional server-side VGGT dependency loading
+# VGGT with the ``feature_only`` option is vendored under ``third_party/VGGT``.
+# Upstream VGGT does not return aggregator features, so the vendored copy is
+# imported directly; a ``vggt`` installed with pip must never shadow it.
+_VENDORED_VGGT_SRC = Path(__file__).resolve().parents[4] / "third_party" / "VGGT" / "src"
+
+
+def _import_vggt() -> "nn.Module":
+    """Return the vendored ``vggt.models.vggt.VGGT`` class."""
+    package = _VENDORED_VGGT_SRC / "vggt"
+    if not (package / "models" / "vggt.py").is_file():
+        raise ImportError(
+            f"Vendored VGGT not found at {package}. It is required when enable_gaussian_3d=true "
+            "and ships with this repository under third_party/VGGT."
+        )
+    loaded = sys.modules.get("vggt")
+    if loaded is not None and Path(loaded.__file__).resolve().parent != package:
+        for name in [name for name in sys.modules if name == "vggt" or name.startswith("vggt.")]:
+            del sys.modules[name]
+    source = str(_VENDORED_VGGT_SRC)
+    if source in sys.path:
+        sys.path.remove(source)
+    sys.path.insert(0, source)
+    from vggt.models.vggt import VGGT
+
+    return VGGT
+# [SIDA--]
+
+
 class VGGTFeatureEncoder(nn.Module):
     """Run the real VGGT aggregator and return ``[B,V,256,D]`` patch tokens."""
 
@@ -32,13 +61,7 @@ class VGGTFeatureEncoder(nn.Module):
         use_depth: bool = True,
     ) -> None:
         super().__init__()
-        try:
-            from vggt.models.vggt import VGGT
-        except ImportError as exc:
-            raise ImportError(
-                "VGGT is required when enable_gaussian_3d=true. Install the pinned VGGT package "
-                "or expose its source package on PYTHONPATH."
-            ) from exc
+        VGGT = _import_vggt()
         self.image_size = int(image_size)
         self.output_grid = int(output_grid)
         self.feature_dim = int(feature_dim)

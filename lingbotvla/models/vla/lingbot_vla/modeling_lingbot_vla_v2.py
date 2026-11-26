@@ -549,15 +549,10 @@ class FlowMatchingV2(FlowMatchingV1):
                 use_fused=bool(getattr(self.config, "gaussian_use_fused_rasterizer", True)),
             )
             # Keep LPIPS in a plain list so FSDP/checkpoint code does not treat
-            # the frozen perceptual network as a trainable submodule.
+            # the frozen perceptual network as a trainable submodule. Build it
+            # lazily on first forward: model construction may happen under the
+            # meta device, which cannot be moved to CUDA afterwards.
             self._gaussian_lpips_holder = []
-            if bool(getattr(self.config, "gaussian_use_lpips", False)):
-                lpips_fn = build_lpips_fn(
-                    net=str(getattr(self.config, "gaussian_lpips_net", "vgg")),
-                    cache_dir=getattr(self.config, "gaussian_lpips_cache_dir", None),
-                )
-                if lpips_fn is not None:
-                    self._gaussian_lpips_holder.append(lpips_fn)
         else:
             self.gaussian_vggt = None
             self.gaussian_3d_adapter = None
@@ -1066,12 +1061,20 @@ class FlowMatchingV2(FlowMatchingV1):
         )
 
         lpips_fn = self._gaussian_lpips_holder[0] if self._gaussian_lpips_holder else None
-        if lpips_fn is not None:
+        lpips_weight = float(getattr(self.config, "gaussian_lpips_weight", 0.0))
+        if lpips_fn is None and bool(getattr(self.config, "gaussian_use_lpips", False)) and lpips_weight > 0.0:
+            lpips_fn = build_lpips_fn(
+                net=str(getattr(self.config, "gaussian_lpips_net", "vgg")),
+                cache_dir=getattr(self.config, "gaussian_lpips_cache_dir", None),
+            )
+            if lpips_fn is not None:
+                lpips_fn = lpips_fn.to(hidden_states.device)
+                self._gaussian_lpips_holder.append(lpips_fn)
+        elif lpips_fn is not None:
             lpips_device = next(lpips_fn.parameters()).device
             if lpips_device != hidden_states.device:
                 lpips_fn = lpips_fn.to(hidden_states.device)
                 self._gaussian_lpips_holder[0] = lpips_fn
-        lpips_weight = float(getattr(self.config, "gaussian_lpips_weight", 0.0))
 
         view_losses = []
         debug_entries = []

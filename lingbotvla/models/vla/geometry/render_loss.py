@@ -44,7 +44,11 @@ def build_lpips_fn(net: str = "vgg", cache_dir: str | None = None) -> Callable |
         logging.warning("lpips package not installed; Gaussian render LPIPS is disabled. Install with: pip install lpips")
         return None
     try:
-        lpips_fn = lpips.LPIPS(net=net)
+        # The model loader may construct submodules under the meta device. LPIPS
+        # is a frozen helper held outside FSDP, so materialize it on CPU here;
+        # the training forward moves it to the active CUDA device when needed.
+        with torch.device("cpu"):
+            lpips_fn = lpips.LPIPS(net=net)
     except Exception as exc:  # missing/download-failed VGG weights should not break training
         logging.warning(f"Failed to initialize LPIPS ({net}): {exc}; Gaussian render LPIPS is disabled")
         return None

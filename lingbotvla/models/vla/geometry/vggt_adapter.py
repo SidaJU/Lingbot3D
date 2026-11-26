@@ -101,6 +101,18 @@ class VGGTFeatureEncoder(nn.Module):
             if images.is_cuda and patch_dtype in (torch.float16, torch.bfloat16)
             else nullcontext()
         )
+        # FSDP mixed precision can leave DPTHead parameters split between FP32
+        # and BF16. Keep the whole depth head in FP32; the surrounding autocast
+        # remains BF16 for the aggregator so patch embedding/conv inputs match.
+        if self.use_depth:
+            depth_head = getattr(self.encoder, "depth_head", None)
+            if depth_head is not None:
+                for param in depth_head.parameters():
+                    if param.dtype != torch.float32:
+                        param.data = param.data.float()
+                for buffer in depth_head.buffers():
+                    if buffer.dtype != torch.float32:
+                        buffer.data = buffer.data.float()
         with context, amp_context:
             outputs = self.encoder(images)
         features = outputs["features"]

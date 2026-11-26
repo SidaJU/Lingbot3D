@@ -1,0 +1,14 @@
+# Gaussian 3D extension (enable_gaussian_3d=true). Install on top of requirements.txt:
+#
+#   pip install --no-build-isolation -r requirements-gaussian.txt
+#
+# diff-gaussian-rasterization is a CUDA extension compiled against the installed
+# torch, so run this from the repository root with the CUDA toolkit (nvcc) that
+# matches torch available at build time. Its source and the glm headers it needs
+# are vendored under third_party/.
+#
+# LPIPS needs the torchvision VGG16 backbone at runtime. Place it at
+# <gaussian_lpips_cache_dir>/hub/checkpoints/vgg16-397923af.pth, or let
+# torchvision download it.
+lpips==0.1.4
+./third_party/diff-gaussian-rasterization

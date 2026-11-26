@@ -37,7 +37,9 @@ class DifferentiableGaussianRenderer(nn.Module):
         if self.use_fused and not _FUSED_RASTERIZER_AVAILABLE:
             raise ImportError(
                 "GaussianDream RGB supervision requires diff-gaussian-rasterization. "
-                "Install the CUDA extension before enabling the render loss."
+                "Its source is vendored under third_party/; build it with "
+                "`pip install --no-build-isolation -r requirements-gaussian.txt` "
+                "before enabling the render loss."
             )
 
     def _forward_fused(

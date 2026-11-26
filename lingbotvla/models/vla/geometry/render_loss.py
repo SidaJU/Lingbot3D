@@ -61,7 +61,14 @@ def build_lpips_fn(net: str = "vgg", cache_dir: str | None = None) -> Callable |
 
     params = list(lpips_fn.parameters())
     nonfinite = sum(0 if param.is_meta else int(not bool(torch.isfinite(param).all())) for param in params)
-    linear_l1 = float(sum(layer.model[1].weight.detach().float().abs().sum().item() for layer in lpips_fn.lin0))
+    # lpips 0.1.4 exposes lin0 as a single NetLinLayer, not a Sequence.
+    lin_layers = list(lpips_fn.lin0) if isinstance(lpips_fn.lin0, torch.nn.Sequential) else [lpips_fn.lin0]
+    linear_l1 = 0.0
+    for lin_layer in lin_layers:
+        for submodule in getattr(lin_layer, "model", torch.nn.Module()).modules():
+            weight = getattr(submodule, "weight", None)
+            if weight is not None:
+                linear_l1 += float(weight.detach().float().abs().sum().item())
     trunk_l1 = float(params[0].detach().float().abs().sum().item()) if params else 0.0
     lpips_ok = bool(params) and nonfinite == 0 and linear_l1 > 0.0 and trunk_l1 > 0.0
     _logging.get_logger(__name__).info_rank0(

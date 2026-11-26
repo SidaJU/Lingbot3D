@@ -207,6 +207,29 @@ def _init_parameter(
     module.apply(found_init_func)
 
 
+def _reset_gaussian_decoder(model: "nn.Module", pending_names: Sequence[str]) -> None:
+    """Re-apply the GaussianDream decoder's own construction-time initialization.
+
+    The generic ``_init_gaussian_weights`` kaiming init overrode the official
+    small ``xavier(gain=0.01)`` head init and never touched ``nn.GroupNorm``,
+    leaving those affine parameters at whatever ``to_empty()`` produced.
+    """
+    for module_name, module in model.named_modules():
+        is_decoder = module_name.split(".")[-1] == "gaussian_decoder" or type(module).__name__ == "GaussianParameterDecoder"
+        if not is_decoder:
+            continue
+        reset = getattr(module, "reset_parameters", None)
+        if not callable(reset):
+            raise TypeError(f"{module_name} must implement reset_parameters()")
+        reset()
+        prefix = f"{module_name}." if module_name else "gaussian_decoder."
+        tensors = sum(name.startswith(prefix) for name in pending_names)
+        logger.info_rank0(
+            "%s Gaussian decoder %s: official construction-time init re-applied (%d tensors)",
+            WEIGHT_CHECK_TAG, module_name, tensors,
+        )
+
+
 def _init_gaussian_weights(module: "nn.Module") -> None:
     """Default-style initialization for newly added Gaussian modules."""
     if isinstance(module, (nn.Conv2d, nn.Linear)):
@@ -237,6 +260,174 @@ def _get_weight_loader(model) -> "VLAWeightLoader":
     return loader_factory()
 
 
+# [SIDA++] Weight-loading verification shared by the base VLA and the Gaussian extension.
+WEIGHT_CHECK_TAG = "[WEIGHT-LOAD-CHECK]"
+_OFFICIAL_WEIGHTS_LABEL = "LingBot official checkpoint"
+_PRETRAINED_EXTERNAL_MARKERS = (("gaussian_vggt.", "VGGT (pretrained, frozen)"),)
+_NEW_PARAM_MARKERS = (
+    ("gaussian_3d_adapter.", "Gaussian 3D adapter (new)"),
+    ("gaussian_decoder.", "Gaussian decoder (new)"),
+    (".lora_A.", "LoRA adapters (new)"),
+    (".lora_B.", "LoRA adapters (new)"),
+)
+
+
+def _is_main_process() -> bool:
+    return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+
+
+def _classify_param(name: str) -> str:
+    for marker, label in _PRETRAINED_EXTERNAL_MARKERS + _NEW_PARAM_MARKERS:
+        if marker in name:
+            return label
+    return _OFFICIAL_WEIGHTS_LABEL
+
+
+def _relative_error(current: "torch.Tensor", reference: "torch.Tensor") -> float:
+    with torch.no_grad():
+        current = current.detach().float()
+        reference = reference.detach().to(device=current.device, dtype=torch.float32)
+        scale = reference.abs().sum().clamp_min(1e-12)
+        return float(((current - reference).abs().sum() / scale).item())
+
+
+def _dispatch_relative_error(model: "nn.Module", name: str, reference: "torch.Tensor") -> Optional[float]:
+    """Compare a checkpoint tensor with the parameter it was just copied into."""
+    try:
+        module, leaf = _find_submodule(model, name)
+        current = module._parameters[leaf]
+    except Exception:
+        return None
+    if current is None or current.is_meta or hasattr(current.data, "device_mesh"):
+        return None
+    return _relative_error(current, reference)
+
+
+def _reload_pretrained_external_modules(model: "nn.Module", pending_names: set) -> Dict[str, dict]:
+    """Load pretrained frozen modules once the model has left the meta device.
+
+    ``to_empty()`` discards the weights such modules loaded in ``__init__`` under
+    ``init_empty_weights()``, where ``load_state_dict`` is a no-op. Modules expose
+    ``load_pretrained_weights()`` to reload and self-verify after materialization.
+    """
+    checks: Dict[str, dict] = {}
+    for module_name, module in model.named_modules():
+        reload_fn = getattr(module, "load_pretrained_weights", None)
+        if not callable(reload_fn):
+            continue
+        result = reload_fn()
+        prefix = f"{module_name}." if module_name else ""
+        for name in list(pending_names):
+            if name.startswith(prefix):
+                pending_names.remove(name)
+        checks[module_name or type(module).__name__] = result
+        logger.info_rank0(
+            "%s module %s: loaded %s/%s tensors, sampled %s, max_rel_err=%.3e, source=%s, result=%s",
+            WEIGHT_CHECK_TAG,
+            module_name or type(module).__name__,
+            result.get("loaded"),
+            result.get("total"),
+            result.get("checked"),
+            float(result.get("max_rel_err", 1.0)),
+            result.get("source"),
+            "OK" if result.get("ok") else "FAIL",
+        )
+    return checks
+
+
+def _log_weight_load_report(
+    model: "nn.Module",
+    weights_path: str,
+    loaded_names: Sequence[str],
+    pending_names: Sequence[str],
+    dispatch_errors: Dict[str, float],
+    module_checks: Dict[str, dict],
+) -> bool:
+    """Summarize which weights were loaded, re-initialized, or left unloaded."""
+    loaded, pending = set(loaded_names), set(pending_names)
+    groups: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    check_enabled = _is_main_process()
+    for name, param in model.named_parameters():
+        stats = groups.setdefault(
+            _classify_param(name),
+            {"params": 0, "tensors": 0, "from_checkpoint": 0, "missing": 0, "meta": 0, "nonfinite": 0, "all_zero": 0, "checked": 0, "max_rel_err": 0.0},
+        )
+        stats["params"] += param.numel()
+        stats["tensors"] += 1
+        if name in loaded:
+            stats["from_checkpoint"] += 1
+        if name in pending:
+            stats["missing"] += 1
+        if param.is_meta:
+            stats["meta"] += 1
+        elif check_enabled:
+            with torch.no_grad():
+                if not bool(torch.isfinite(param).all()):
+                    stats["nonfinite"] += 1
+                elif bool((param == 0).all()):
+                    stats["all_zero"] += 1
+        error = dispatch_errors.get(name)
+        if error is not None:
+            stats["checked"] += 1
+            stats["max_rel_err"] = max(stats["max_rel_err"], error)
+
+    external_labels = {label for _, label in _PRETRAINED_EXTERNAL_MARKERS}
+    overall = True
+    lines = [
+        "=" * 100,
+        f"{WEIGHT_CHECK_TAG} base checkpoint: {weights_path}",
+        f"{WEIGHT_CHECK_TAG} {'component':<42}{'params':>14}{'tensors':>9}{'loaded':>8}{'missing':>8}{'chk':>5}{'zero':>6}{'bad':>5}  max_err  status",
+    ]
+    for label, stats in groups.items():
+        is_pretrained = label == _OFFICIAL_WEIGHTS_LABEL or label in external_labels
+        if is_pretrained:
+            ok = stats["missing"] == 0 and stats["meta"] == 0 and stats["nonfinite"] == 0 and stats["max_rel_err"] < 0.05
+            if label in external_labels:
+                ok = ok and any(result.get("ok") for result in module_checks.values())
+            status = "all from checkpoint" if ok else "NOT fully loaded"
+        else:
+            ok = stats["meta"] == 0 and stats["nonfinite"] == 0 and stats["all_zero"] < stats["tensors"] and stats["max_rel_err"] < 0.05
+            status = "fresh init (by design)" if ok else "INVALID init"
+        overall = overall and ok
+        bad = stats["meta"] + stats["nonfinite"]
+        lines.append(
+            f"{WEIGHT_CHECK_TAG} {label:<42}{stats['params']:>14,}{stats['tensors']:>9}{stats['from_checkpoint']:>8}"
+            f"{stats['missing']:>8}{stats['checked']:>5}{stats['all_zero']:>6}{bad:>5}  {stats['max_rel_err']:.1e}  {'OK' if ok else 'FAIL'} - {status}"
+        )
+    lines.append(f"{WEIGHT_CHECK_TAG} RESULT: {'PASS' if overall else 'FAIL'}")
+    lines.append("=" * 100)
+    logger.info_rank0("\n".join(lines))
+    return overall
+
+
+def log_external_model_check(label: str, module: Optional["nn.Module"], source: Optional[str] = None) -> bool:
+    """Verify a standalone frozen teacher (MoGe/MoRGBD/DINO) holds real weights."""
+    if module is None:
+        logger.info_rank0("%s %s: DISABLED (not built in this run)", WEIGHT_CHECK_TAG, label)
+        return True
+    params = list(module.parameters())
+    meta = sum(1 for param in params if param.is_meta)
+    nonfinite = all_zero = 0
+    l1_sum = 0.0
+    for param in params:
+        if param.is_meta:
+            continue
+        with torch.no_grad():
+            if not bool(torch.isfinite(param).all()):
+                nonfinite += 1
+            elif bool((param == 0).all()):
+                all_zero += 1
+            else:
+                l1_sum += float(param.detach().float().abs().sum().item())
+    ok = bool(params) and meta == 0 and nonfinite == 0 and all_zero < len(params) and l1_sum > 0.0
+    logger.info_rank0(
+        "%s external %s: tensors=%d meta=%d nonfinite=%d all_zero=%d l1_checksum=%.4e source=%s result=%s",
+        WEIGHT_CHECK_TAG, label, len(params), meta, nonfinite, all_zero, l1_sum, source, "OK" if ok else "FAIL",
+    )
+    return ok
+# [SIDA--]
+
+
 @torch.no_grad()
 def load_model_weights(
     model: Union["nn.Module", "PreTrainedModel"],
@@ -259,6 +450,12 @@ def load_model_weights(
     # Get model parameter names
     vlm_param_names  = weight_loader.get_vlm_para_fullnames(model)
     print(f'====vlm contains {len(vlm_param_names)} paras=====')
+
+    # [SIDA++] Track what was actually written from the checkpoint.
+    check_enabled = _is_main_process()
+    loaded_names: List[str] = []
+    dispatch_errors: Dict[str, float] = {}
+    # [SIDA--]
 
     model.to_empty(device=init_device)
 
@@ -299,6 +496,15 @@ def load_model_weights(
                 else:
                     parameter_names.remove(name)
                     _dispatch_parameter(model, name, tensor, dtensor_factory)
+                    # [SIDA++] Confirm the copy landed in live model memory.
+                    loaded_names.append(name)
+                    # Sample one tensor in twenty: the comparison allocates FP32
+                    # temporaries on the device and load-time VRAM is tight.
+                    if check_enabled and len(loaded_names) % 20 == 0:
+                        error = _dispatch_relative_error(model, name, tensor)
+                        if error is not None:
+                            dispatch_errors[name] = error
+                    # [SIDA--]
             else:
                 if post_training:
                     # [SIDA++] A smoke run may intentionally disable the
@@ -321,6 +527,14 @@ def load_model_weights(
 
     for name, buffer in buffer_dict.items():
         _dispatch_buffer(model, name, buffer)
+
+    # [SIDA++] Frozen pretrained modules (VGGT) must be reloaded after
+    # to_empty(); otherwise they are randomly re-initialized below.
+    module_checks = _reload_pretrained_external_modules(model, parameter_names)
+    # The Gaussian decoder replicates GaussianDream, so re-run its own
+    # construction-time initialization rather than the generic one below.
+    _reset_gaussian_decoder(model, parameter_names)
+    # [SIDA--]
 
     if post_training:
         # [SIDA++] Newly added Gaussian/LoRA modules intentionally have no
@@ -373,6 +587,9 @@ def load_model_weights(
             # checkpoint. They must be re-initialized with normal random
             # weights; leaving them after to_empty() keeps them at zero and
             # freezes the renderer at constant output.
+            if "gaussian_decoder." in name:
+                # Initialized above through the decoder's reset_parameters().
+                continue
             if any(marker in name for marker in gaussian_missing_markers):
                 _init_parameter(model, name, init_func=_init_gaussian_weights)
             elif not adanorm_time:
@@ -389,6 +606,10 @@ def load_model_weights(
             output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
         except Exception as e:
             logger.info_rank0(f"Failed to tie embeddings: {e}")
+
+    # [SIDA++] One grep-able summary of what is loaded, fresh, or missing.
+    _log_weight_load_report(model, weights_path, loaded_names, parameter_names, dispatch_errors, module_checks)
+    # [SIDA--]
 
 
 def _get_shard_info(

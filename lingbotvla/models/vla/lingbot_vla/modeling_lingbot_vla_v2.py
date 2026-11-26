@@ -1154,7 +1154,7 @@ class FlowMatchingV2(FlowMatchingV1):
                 conf_threshold=float(getattr(self.config, "gaussian_depth_conf_threshold", 0.5)),
                 min_depth=float(getattr(self.config, "gaussian_depth_min", 0.05)),
                 max_depth=float(getattr(self.config, "gaussian_depth_max", 8.0)),
-                scale_align=bool(getattr(self.config, "gaussian_depth_scale_align", True)),
+                scale_align=bool(getattr(self.config, "gaussian_depth_scale_align", False)),
             )
             weighted_depth_loss = depth_weight * depth_loss
             metrics["gaussian_render/depth_loss"] = depth_loss.detach()
@@ -1254,23 +1254,29 @@ class FlowMatchingV2(FlowMatchingV1):
                     target_depth_hw = target_depth_hw.clamp(min_depth, max_depth)
                     pred_depth_hw = torch.nan_to_num(pred_depth_hw, nan=min_depth, posinf=max_depth, neginf=min_depth)
                     target_depth_hw = torch.nan_to_num(target_depth_hw, nan=min_depth, posinf=max_depth, neginf=min_depth)
-                    valid = torch.isfinite(pred_depth_hw) & torch.isfinite(target_depth_hw)
-                    if bool(valid.any()):
-                        depth_values = torch.cat((pred_depth_hw[valid], target_depth_hw[valid]))
-                        depth_lo = float(torch.quantile(depth_values, 0.02).item())
-                        depth_hi = float(torch.quantile(depth_values, 0.98).item())
-                    else:
-                        depth_lo, depth_hi = min_depth, max_depth
-                    if depth_hi <= depth_lo + 1e-6:
-                        depth_lo, depth_hi = min_depth, max_depth
 
-                    def _depth_image(depth_hw: torch.Tensor) -> Image.Image:
-                        scaled = (depth_hw - depth_lo) / (depth_hi - depth_lo)
+                    # Each map is normalized on its own 2%-98% range so both
+                    # structures stay visible even when their scales differ
+                    # (e.g. an untrained constant depth of 4 vs. ~1 m targets).
+                    def _depth_range(depth_hw: torch.Tensor) -> tuple[float, float] | None:
+                        values = depth_hw[torch.isfinite(depth_hw)]
+                        if values.numel() == 0:
+                            return None
+                        low = float(torch.quantile(values, 0.02).item())
+                        high = float(torch.quantile(values, 0.98).item())
+                        return (low, high) if high > low + 1e-6 else None
+
+                    def _depth_image(depth_hw: torch.Tensor, depth_range: tuple[float, float] | None) -> Image.Image:
+                        if depth_range is None:
+                            # A constant map is drawn as uniform mid-gray.
+                            scaled = torch.full_like(depth_hw, 0.5)
+                        else:
+                            scaled = (depth_hw - depth_range[0]) / (depth_range[1] - depth_range[0])
                         array = scaled.clamp(0.0, 1.0).mul(255.0).round().byte().cpu().numpy()
                         return Image.fromarray(array, mode="L").convert("RGB")
 
-                    depth_target_img = _depth_image(target_depth_hw)
-                    depth_pred_img = _depth_image(pred_depth_hw)
+                    depth_target_img = _depth_image(target_depth_hw, _depth_range(target_depth_hw))
+                    depth_pred_img = _depth_image(pred_depth_hw, _depth_range(pred_depth_hw))
                     depth_target_img.save(os.path.join(debug_dir, f"{prefix}_{primary_name}_depth_target.png"))
                     depth_pred_img.save(os.path.join(debug_dir, f"{prefix}_{primary_name}_depth_pred.png"))
                     depth_compare = Image.new("RGB", (depth_target_img.width * 2, depth_target_img.height))

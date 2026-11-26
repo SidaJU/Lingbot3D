@@ -55,6 +55,20 @@ def build_lpips_fn(net: str = "vgg", cache_dir: str | None = None) -> Callable |
     lpips_fn.eval()
     for param in lpips_fn.parameters():
         param.requires_grad_(False)
+    # [SIDA++] Same weight-loading check as the VLA/teacher models.
+    from lingbotvla.models.module_utils import WEIGHT_CHECK_TAG
+    from lingbotvla.utils import logging as _logging
+
+    params = list(lpips_fn.parameters())
+    nonfinite = sum(0 if param.is_meta else int(not bool(torch.isfinite(param).all())) for param in params)
+    linear_l1 = float(sum(layer.model[1].weight.detach().float().abs().sum().item() for layer in lpips_fn.lin0))
+    trunk_l1 = float(params[0].detach().float().abs().sum().item()) if params else 0.0
+    lpips_ok = bool(params) and nonfinite == 0 and linear_l1 > 0.0 and trunk_l1 > 0.0
+    _logging.get_logger(__name__).info_rank0(
+        "%s external LPIPS(%s): tensors=%d nonfinite=%d linear_l1=%.4e trunk_l1=%.4e result=%s",
+        WEIGHT_CHECK_TAG, net, len(params), nonfinite, linear_l1, trunk_l1, "OK" if lpips_ok else "FAIL",
+    )
+    # [SIDA--]
     return lpips_fn
 
 
@@ -151,14 +165,18 @@ def compute_gaussian_depth_loss(
     conf_threshold: float = 0.5,
     min_depth: float = 0.05,
     max_depth: float = 8.0,
-    scale_align: bool = True,
+    scale_align: bool = False,
 ) -> torch.Tensor:
-    """Masked scale-invariant log-L1 depth loss.
+    """Depth supervision for the Gaussian decoder depth map.
 
     ``pred_depth`` is the Gaussian decoder depth map [B,1,H,W]. ``target_depth``
-    is a pseudo depth map such as VGGT depth, also [B,1,H,W]. Because pseudo
-    depth is not guaranteed to be metric-calibrated, log-depth is compared
-    after optional per-sample median alignment.
+    is a pseudo depth map such as VGGT depth, also [B,1,H,W].
+
+    ``scale_align=False`` (default) follows official GaussianDream:
+    ``F.l1_loss(depth_map, gt_depth)`` in linear depth. It reduces to plain L1
+    whenever every pixel passes the optional confidence mask.
+    ``scale_align=True`` switches to per-sample median-aligned log-L1 for
+    pseudo depth that is not metric-calibrated.
     """
     if pred_depth.ndim == 4 and pred_depth.shape[-1] == 1:
         pred_depth = pred_depth.permute(0, 3, 1, 2)
@@ -191,22 +209,22 @@ def compute_gaussian_depth_loss(
     pred = pred.clamp(min_depth, max_depth)
     target = target.clamp(min_depth, max_depth)
     valid = valid & torch.isfinite(pred.squeeze(1)) & torch.isfinite(target.squeeze(1))
+    diff = (pred.squeeze(1) - target.squeeze(1)).abs()
+    denom = valid.to(dtype=diff.dtype).sum().clamp_min(1.0)
+    if not scale_align:
+        return torch.where(valid, diff, torch.zeros_like(diff)).sum() / denom
+
     log_pred = pred.squeeze(1).log()
     log_target = target.squeeze(1).log()
-
-    if scale_align:
-        shifts = []
-        for b in range(log_pred.shape[0]):
-            row_valid = valid[b]
-            if bool(row_valid.any()):
-                shifts.append(log_pred[b][row_valid].median() - log_target[b][row_valid].median())
-            else:
-                shifts.append(log_pred.new_zeros(()))
-        shift = torch.stack(shifts).view(-1, 1, 1).detach()
-        log_target = log_target + shift
-
-    weights = valid.to(dtype=log_pred.dtype) * conf
-    denom = weights.sum().clamp_min(1.0)
-    return ((log_pred - log_target).abs() * weights).sum() / denom
+    shifts = []
+    for b in range(log_pred.shape[0]):
+        row_valid = valid[b]
+        if bool(row_valid.any()):
+            shifts.append(log_pred[b][row_valid].median() - log_target[b][row_valid].median())
+        else:
+            shifts.append(log_pred.new_zeros(()))
+    shift = torch.stack(shifts).view(-1, 1, 1).detach()
+    log_diff = (log_pred - (log_target + shift)).abs()
+    return torch.where(valid, log_diff, torch.zeros_like(log_diff)).sum() / denom
 # [SIDA--]
 

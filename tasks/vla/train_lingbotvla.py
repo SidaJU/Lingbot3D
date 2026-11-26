@@ -219,9 +219,12 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_use_vggt_depth_target: bool = field(default=True, metadata={"help": "Use VGGT depth as the pseudo target."})
     gaussian_depth_loss_weight: float = field(default=0.1, metadata={"help": "VGGT pseudo-depth loss weight."})
     gaussian_depth_conf_threshold: float = field(default=0.5, metadata={"help": "VGGT depth confidence threshold."})
-    gaussian_depth_min: float = field(default=0.05, metadata={"help": "Minimum depth used by the log-depth loss."})
-    gaussian_depth_max: float = field(default=8.0, metadata={"help": "Maximum depth used by the log-depth loss."})
-    gaussian_depth_scale_align: bool = field(default=True, metadata={"help": "Median-align pseudo-depth scale per sample."})
+    gaussian_depth_min: float = field(default=0.05, metadata={"help": "Minimum depth used by the depth loss."})
+    gaussian_depth_max: float = field(default=8.0, metadata={"help": "Maximum depth used by the depth loss."})
+    gaussian_depth_scale_align: bool = field(
+        default=False,
+        metadata={"help": "Use median-aligned log-L1 instead of official GaussianDream linear L1."},
+    )
     gaussian_use_lpips: bool = field(default=False, metadata={"help": "Enable VGG LPIPS render supervision."})
     gaussian_lpips_weight: float = field(default=0.1, metadata={"help": "LPIPS loss weight."})
     gaussian_lpips_net: str = field(default="vgg", metadata={"help": "LPIPS backbone network."})
@@ -462,6 +465,7 @@ def main():
     use_future_video = use_depth_align and args.train.align_params.get('use_future_video', False)
     depth_model_type = None
     video_teacher = None
+    moge_model = morgbd_model = None
     future_video_loss_weight = 1.0
     depth_loss_weight = 1.0
     future_depth_loss_weight = 1.0
@@ -493,6 +497,25 @@ def main():
         if use_future_video:
             print('====Loading Future Video Model====')
             video_teacher = build_video_model(args.train.align_params['video'])
+
+    # [SIDA++] Confirm standalone frozen teachers hold real pretrained weights.
+    from lingbotvla.models.module_utils import WEIGHT_CHECK_TAG, log_external_model_check
+    from lingbotvla.models.vla.vision_models import module_utils as vision_module_utils
+
+    depth_cfg = args.train.align_params.get('depth', {}) or {}
+    video_cfg = args.train.align_params.get('video', {}) or {}
+    logger.info_rank0(
+        "%s teacher packages importable: MoGe=%s, MoRGBD=%s (depth align enabled=%s)",
+        WEIGHT_CHECK_TAG,
+        hasattr(vision_module_utils, "v2"),
+        hasattr(vision_module_utils, "v2_morgbd"),
+        use_depth_align,
+    )
+    log_external_model_check("MoGe", moge_model, depth_cfg.get('moge_path'))
+    log_external_model_check("MoRGBD", morgbd_model, depth_cfg.get('morgbd_path'))
+    log_external_model_check("DINO video", video_teacher, video_cfg.get('ckpt_path'))
+    # [SIDA--]
+
     from lingbotvla.utils.moe_utils import log_model_param_stats
     log_model_param_stats(model)
 
@@ -1175,6 +1198,12 @@ def main():
                         scalar = _tb_scalar(value)
                         if scalar is not None:
                             writer.add_scalar(key, scalar, global_step)
+                    # [SIDA++] Surface Gaussian reconstruction terms (RGB/LPIPS/SSIM/depth/reg).
+                    elif key.startswith("gaussian_render/"):
+                        scalar = _tb_scalar(value)
+                        if scalar is not None:
+                            writer.add_scalar(f"training/{key}", scalar, global_step)
+                    # [SIDA--]
                 align_training_aliases = {
                     "align/current_video_loss": "training/current_video_loss",
                     "align/current_video_loss_weighted": "training/current_video_loss_weighted",

@@ -55,19 +55,70 @@ class VGGTFeatureEncoder(nn.Module):
         checkpoint = Path(model_path).expanduser()
         if not checkpoint.is_file():
             raise FileNotFoundError(f"VGGT checkpoint does not exist: {checkpoint}")
-        payload = torch.load(checkpoint, map_location="cpu")
+        self.checkpoint_path = str(checkpoint)
+        self.checkpoint_loaded = False
+        self.load_check: dict = {}
+        self._load_checkpoint()
+        self.requires_grad_(not freeze)
+        if freeze:
+            self.eval()
+
+    def _read_checkpoint(self) -> dict:
+        payload = torch.load(self.checkpoint_path, map_location="cpu")
         state = payload.get("state_dict", payload.get("model", payload)) if isinstance(payload, dict) else payload
         # The public VGGT-1B checkpoint contains optional camera/point/depth/track
         # heads. This first LingBot stage instantiates only the aggregator, so
         # discard checkpoint entries for disabled heads before strict validation.
-        encoder_keys = set(self.encoder.state_dict().keys())
-        state = {key: value for key, value in state.items() if key in encoder_keys}
+        encoder_keys = self.encoder.state_dict().keys()
+        return {key: value for key, value in state.items() if key in encoder_keys}
+
+    def _load_checkpoint(self) -> Tuple[int, int]:
+        """Load the VGGT checkpoint; returns ``(loaded_tensors, total_tensors)``.
+
+        The VLA model may be constructed under ``init_empty_weights()``, where
+        every parameter is on the meta device and ``load_state_dict`` is a
+        no-op. Loading is then deferred to ``load_pretrained_weights``, which
+        the weight loader calls after the model has been materialized.
+        """
+        tensors = self.encoder.state_dict()
+        if any(value.is_meta for value in tensors.values()):
+            return 0, len(tensors)
+        state = self._read_checkpoint()
         missing, unexpected = self.encoder.load_state_dict(state, strict=False)
         if missing:
             raise RuntimeError(f"VGGT checkpoint is missing {len(missing)} parameters")
-        self.requires_grad_(not freeze)
-        if freeze:
-            self.eval()
+        if unexpected:
+            raise RuntimeError(f"VGGT checkpoint has {len(unexpected)} unexpected parameters")
+        self.checkpoint_loaded = True
+        # Verify while the reference tensors are still in memory; compare a
+        # deterministic sample so the check stays cheap for the 1B encoder.
+        keys = sorted(key for key, value in state.items() if torch.is_floating_point(value))
+        stride = max(1, len(keys) // 24)
+        live = self.encoder.state_dict()
+        max_rel_err, checked = 0.0, 0
+        for key in keys[::stride]:
+            source = state[key].detach().float()
+            current = live[key].detach().float().cpu()
+            error = (current - source).abs().sum()
+            scale = source.abs().sum().clamp_min(1e-12)
+            max_rel_err = max(max_rel_err, float((error / scale).item()))
+            checked += 1
+        self.load_check = {
+            "loaded": len(state),
+            "total": len(tensors),
+            "checked": checked,
+            "max_rel_err": max_rel_err,
+            "ok": len(state) == len(tensors) and len(tensors) > 0 and max_rel_err < 0.05,
+            "source": self.checkpoint_path,
+        }
+        return len(state), len(tensors)
+
+    def load_pretrained_weights(self) -> dict:
+        """Reload and verify VGGT weights after the model left the meta device."""
+        if any(value.is_meta for value in self.encoder.state_dict().values()):
+            raise RuntimeError("VGGT encoder still has meta tensors; load weights after to_empty().")
+        self._load_checkpoint()
+        return dict(self.load_check)
 
     def forward(self, images: Tensor, return_depth: bool = False):
         if images.ndim != 5 or images.shape[2] != 3:

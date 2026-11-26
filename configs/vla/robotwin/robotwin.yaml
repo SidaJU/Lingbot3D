@@ -171,7 +171,7 @@ train:
   gaussian_depth_conf_threshold: 0.5
   gaussian_depth_min: 0.05
   gaussian_depth_max: 8.0
-  gaussian_depth_scale_align: true
+  gaussian_depth_scale_align: false
   # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after
   # `pip install lpips` succeeds on the training machine.
   # If pre-downloading the backbone, place it at:

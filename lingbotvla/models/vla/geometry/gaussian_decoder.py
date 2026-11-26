@@ -35,6 +35,22 @@ class GaussianParameters:
     depth_map: Tensor | None = None
 
 
+def _reset_child_parameters(module: nn.Module) -> None:
+    """Re-run each child's own initialization.
+
+    Layers and heads that define ``reset_parameters`` are reset through it;
+    plain containers are traversed. This reproduces the construction-time
+    initialization of a normally built module, which is what the official
+    GaussianDream decoder relies on, after a ``to_empty()`` materialization.
+    """
+    for child in module.children():
+        reset = getattr(child, "reset_parameters", None)
+        if callable(reset):
+            child.reset_parameters()
+        else:
+            _reset_child_parameters(child)
+
+
 class _UpsampleBlock(nn.Module):
     """GaussianDream upsample block: ConvTranspose + GroupNorm + residual."""
 
@@ -132,6 +148,12 @@ class GeometryHead(nn.Module):
                 nn.GELU(),
                 nn.Conv2d(64, 1, 3, padding=1),
             )
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """Official GaussianDream head init: default layers, then small outputs."""
+        _reset_child_parameters(self)
+        if self.predict_depth:
             for module in self.depth_refine.modules():
                 if isinstance(module, nn.Conv2d):
                     nn.init.xavier_uniform_(module.weight, gain=0.01)
@@ -171,6 +193,11 @@ class AppearanceHead(nn.Module):
                 nn.GELU(),
             )
         self.sh_head = nn.Conv2d(feature_dim, 9, 3, padding=1)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """Official GaussianDream appearance init: default img_merger, small SH head."""
+        _reset_child_parameters(self)
         nn.init.xavier_uniform_(self.sh_head.weight, gain=0.01)
         nn.init.zeros_(self.sh_head.bias)
 
@@ -215,6 +242,9 @@ class StaticGaussianHead(nn.Module):
             torch.tensor([1.0, 1.0, 1.0, 0.025, 0.025, 0.025, 0.025, 0.025, 0.025], dtype=torch.float32),
             persistent=False,
         )
+
+    def reset_parameters(self) -> None:
+        _reset_child_parameters(self)
 
     def set_image_fusion_enabled(self, enabled: bool) -> None:
         self.use_image_fusion = bool(enabled)
@@ -273,6 +303,10 @@ class GaussianParameterDecoder(nn.Module):
             image_fusion_alpha=float(image_fusion_alpha),
             stop_grad_geometry_for_appearance=bool(stop_grad_geometry_for_appearance),
         )
+
+    def reset_parameters(self) -> None:
+        """Restore construction-time init (LingBot input projection + official decoder)."""
+        _reset_child_parameters(self)
 
     def set_image_fusion_enabled(self, enabled: bool) -> None:
         self.static_head.set_image_fusion_enabled(enabled)

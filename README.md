@@ -88,9 +88,7 @@ bash train.sh tasks/vla/train_lingbotvla.py \
 The recommended config uses `camera_top` as the only render-supervision view
 and GaussianDream-style offline DA2 depth targets (VGGT depth head disabled).
 It reads models from `./models`, datasets and sidecars from `./data`, and
-writes outputs to `./runs`. The single-view config without the 4D teachers is
-also available as
-`configs/vla/robotwin/robotwin_gaussian_single_view.yaml`.
+writes outputs to `./runs`.
 
 ## Model Download
 
@@ -187,7 +185,7 @@ bash train.sh tasks/vla/train_lingbotvla.py ./configs/vla/robotwin/robotwin.yaml
 The post-training config uses sequence-wise auxiliary loss (`sequence_wise_mode: "per_sequence"`, `sequence_wise_loss_coeff: 1e-3`) together with z-loss (`router_z_loss_coeff: 1e-4`) for MoE routing. These terms can be adjusted or disabled depending on the downstream task. To use a loss-free routing setup, comment out the sequence-wise auxiliary loss and z-loss options, and set `bias_update_speed: 0.00025`.
 The post-training config also enables the Muon optimizer. Muon can produce a better-converged loss, but it increases training time. To use the default AdamW optimizer instead, comment out `optimizer: muon`.
 
-We also support **Distributed Muon**, adapted from [TorchTitan's FlexShard implementation](https://github.com/pytorch/torchtitan/tree/496b11d43860bb8d27b54568c76db6310ae7f55e/torchtitan/distributed/flex_shard), to improve training efficiency. See [robotwin_dist_muon.yaml](configs/vla/robotwin/robotwin_dist_muon.yaml) for an example and optimizer parameter settings. This implementation requires FSDP2 with at least two data-parallel ranks.
+We also support **Distributed Muon**, adapted from [TorchTitan's FlexShard implementation](https://github.com/pytorch/torchtitan/tree/496b11d43860bb8d27b54568c76db6310ae7f55e/torchtitan/distributed/flex_shard), to improve training efficiency. Enable it with `optimizer: dist_muon` and tune the `dist_muon_*` arguments; see `lingbotvla/optim/dist_muon.py` for the supported settings. This implementation requires FSDP2 with at least two data-parallel ranks.
 
 Comparison of RoboTwin 2.0 success rates after post-training on clean and randomized data, and single-node post-training speed on NVIDIA H20 GPUs:
 
@@ -196,7 +194,7 @@ Comparison of RoboTwin 2.0 success rates after post-training on clean and random
 | Muon | 93.52 | 92.80 | 5.93 |
 | Distributed Muon | 91.56 | 91.34 | 4.31 |
 
-The parameter settings in [robotwin_dist_muon.yaml](configs/vla/robotwin/robotwin_dist_muon.yaml) are provided as an example for a fair comparison with the Muon optimizer. You can adjust the optimizer settings and other parameters to suit your setup and pursue better performance.
+You can adjust the optimizer settings and other parameters to suit your setup and pursue better performance.
 
 For real-world scenarios, see the native-depth training configuration [real_robot.yaml](configs/vla/real_robot/real_robot.yaml). For detailed explanations of batch size, gradient accumulation, checkpointing, depth/video distillation, MoE, and optimizer settings, see [Training_Config.md](configs/vla/Training_Config.md).
 

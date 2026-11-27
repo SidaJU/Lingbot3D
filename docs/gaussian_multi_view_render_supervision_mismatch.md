@@ -136,7 +136,7 @@ gaussian_render_views:
 configs/vla/robotwin/robotwin_4d_topview.yaml
 ```
 
-该文件与 `configs/vla/robotwin/robotwin_4d.yaml` 的唯一差异是删除了：
+相对早期多视角版本，它不再启用：
 
 ```yaml
     - camera_wrist_left

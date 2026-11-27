@@ -14,7 +14,8 @@ usage() {
 Usage: bash tools/create_train_env.sh [--env-name NAME] [--recreate] [--resume] [--flash-attn-wheel PATH]
 
 Creates a clean Python 3.12 conda environment for lingbotvla training.
-Depth dependencies and local depth packages are always installed.
+Depth, Gaussian, and local packages are always installed. Building the vendored
+CUDA rasterizer requires nvcc matching the installed torch CUDA build.
 If --flash-attn-wheel or FLASH_ATTN_WHEEL is provided, flash-attn is installed
 from that wheel. Otherwise flash-attn==2.8.3 is installed from pip.
 Use --resume to continue installing into an existing environment.
@@ -53,6 +54,9 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# All project paths below are resolved from the repository root, so the script
+# works after cloning the repository to any directory.
+cd "${REPO_ROOT}"
 
 CONDA_BASE="$(conda info --base)"
 eval "$(conda shell.bash hook)"
@@ -90,6 +94,8 @@ fi
 conda activate "${ENV_NAME}"
 
 python -m pip install -U pip setuptools wheel
+# TensorBoard 2.16.2 still imports pkg_resources, which newer setuptools drops.
+python -m pip install 'setuptools<81'
 
 assert_torch_stack() {
   python - <<'PY'
@@ -142,6 +148,10 @@ assert_torch_stack
 # stableVLA's pinned core stack after resolving those runtime dependencies.
 python -m pip install -r "${REPO_ROOT}/requirements.txt"
 python -m pip install numpydantic==1.9.0 --no-deps
+# The Gaussian branch is part of this project's default training path. Install
+# lpips and the vendored CUDA rasterizer from the repository root. nvcc must be
+# available and match the installed torch CUDA build.
+python -m pip install --no-build-isolation -r "${REPO_ROOT}/requirements-gaussian.txt"
 assert_torch_stack
 # Follow the open-source lingbot-vla layout, but do not let local depth
 # packages resolve their own broad dependencies. MoGe's pyproject allows
@@ -169,10 +179,12 @@ import trimesh
 import moge
 import mdm
 import utils3d
+import lpips
+import diff_gaussian_rasterization
 
-print("depth imports ok")
+print("depth and gaussian imports ok")
 PY
-python -m pip install huggingface_hub==0.34.0
+python -m pip install huggingface_hub==0.34.3
 if ! python -m pip check; then
   echo "[WARN] pip check reported dependency metadata issues." >&2
   echo "[WARN] lerobot and depth subpackages are installed with --no-deps intentionally to preserve training pins." >&2

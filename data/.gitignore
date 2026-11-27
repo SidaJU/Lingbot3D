@@ -1,0 +1,17 @@
+# Keep only the directory skeleton and manifests in Git. Models, datasets,
+# sidecars, checkpoints and debug images stay local to each machine.
+*
+!.gitignore
+!README.md
+!models/
+!models/.gitkeep
+!datasets/
+!datasets/.gitkeep
+!camera_sidecars/
+!camera_sidecars/.gitkeep
+!training_data/
+!training_data/robotwin.txt
+!outputs/
+!outputs/.gitkeep
+!models/lpips_cache/
+!models/lpips_cache/.gitkeep

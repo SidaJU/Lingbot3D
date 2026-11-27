@@ -325,7 +325,7 @@ step 400: raw=0.049, depth_mean=4.92, grad=0.31
 修复后的 1000 步 run 使用：
 
 ```text
-output: /pfs/slfan/SIDAZHU/robotwin_gaussian_1000_depthfix_debug2
+output: <OUTPUT_ROOT>/robotwin_gaussian_1000_depthfix_debug2
 TensorBoard run: G_DEPTHFIX_DEBUG2
 ```
 
@@ -350,7 +350,7 @@ step=3 ...
 不再出现 `step=-1`。周期图像保存在：
 
 ```text
-/pfs/slfan/SIDAZHU/robotwin_gaussian_1000_depthfix_debug2/gaussian_debug
+<OUTPUT_ROOT>/robotwin_gaussian_1000_depthfix_debug2/gaussian_debug
 ```
 
 ---

@@ -60,6 +60,33 @@ bash tools/create_train_env.sh \
   --recreate
 ```
 
+The setup script also installs this project's Gaussian 3D dependencies
+(`lpips` and the vendored CUDA rasterizer). A CUDA toolkit with `nvcc` matching
+the installed PyTorch CUDA build is required to compile the rasterizer.
+
+## Gaussian 3D quick start
+
+This branch adds a Gaussian reconstruction path on top of LingBot-VLA 2.0.
+All external assets are kept inside the repository under `data/`, and every
+path in the configs is relative to the repository root. See
+[data/README.md](data/README.md) for model download commands, dataset layout,
+camera sidecars and output locations. No machine-specific absolute paths are
+required.
+
+From the repository root:
+
+```bash
+conda activate lingbotvla
+
+bash train.sh tasks/vla/train_lingbotvla.py \
+  configs/vla/robotwin/robotwin_gaussian_single_view.yaml \
+  --data.data_name multi
+```
+
+The provided config uses `camera_top` as the only render-supervision view,
+keeps VGGT pseudo-depth supervision enabled, and resolves all models, datasets,
+sidecars and outputs under `./data`.
+
 ## Model Download
 
 We release **LingBot-VLA 2.0** pre-trained weights as a native-depth model.

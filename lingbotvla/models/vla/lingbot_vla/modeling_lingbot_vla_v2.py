@@ -989,6 +989,7 @@ class FlowMatchingV2(FlowMatchingV1):
         camera_intrinsics=None,
         camera_extrinsics=None,
         render_target_images=None,
+        gaussian_depth_targets=None,
     ):
         weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
         if not self.enable_gaussian_3d or weight <= 0.0:
@@ -1121,22 +1122,47 @@ class FlowMatchingV2(FlowMatchingV1):
 
         # Keep primary-view depth tensors for both the loss and debug images.
         debug_depth_pred = depth_map
-        debug_depth_target = getattr(self, "_gaussian_vggt_depth", None)
-        if debug_depth_target is not None and debug_depth_target.ndim == 5:
-            if primary_index < debug_depth_target.shape[1]:
-                debug_depth_target = debug_depth_target[:, primary_index]
-                if debug_depth_target.ndim == 4 and debug_depth_target.shape[-1] == 1:
-                    debug_depth_target = debug_depth_target.permute(0, 3, 1, 2)
-            else:
-                debug_depth_target = None
-        debug_depth_conf = getattr(self, "_gaussian_vggt_depth_conf", None)
-        if debug_depth_conf is not None and debug_depth_conf.ndim in (4, 5):
-            if primary_index < debug_depth_conf.shape[1]:
-                debug_depth_conf = debug_depth_conf[:, primary_index]
-                if debug_depth_conf.ndim == 4 and debug_depth_conf.shape[-1] == 1:
-                    debug_depth_conf = debug_depth_conf.squeeze(-1)
-            else:
-                debug_depth_conf = None
+        debug_depth_target = None
+        debug_depth_conf = None
+        use_offline_depth = bool(
+            getattr(self.config, "gaussian_use_offline_depth_target", True)
+            and gaussian_depth_targets is not None
+        )
+        if use_offline_depth:
+            target_depth = gaussian_depth_targets.detach()
+            if target_depth.ndim == 5:
+                if primary_index >= target_depth.shape[1]:
+                    target_depth = None
+                else:
+                    target_depth = target_depth[:, primary_index]
+            if target_depth is not None:
+                if target_depth.ndim == 4 and target_depth.shape[1] != 1 and target_depth.shape[-1] == 1:
+                    target_depth = target_depth.permute(0, 3, 1, 2)
+                elif target_depth.ndim == 3:
+                    target_depth = target_depth.unsqueeze(1)
+                if target_depth.ndim != 4 or target_depth.shape[1] != 1:
+                    raise ValueError(
+                        "gaussian_depth_targets must be [B,V,1,H,W] or [B,1,H,W], "
+                        f"got {tuple(gaussian_depth_targets.shape)}"
+                    )
+                debug_depth_target = target_depth.float().to(hidden_states.device)
+        else:
+            debug_depth_target = getattr(self, "_gaussian_vggt_depth", None)
+            if debug_depth_target is not None and debug_depth_target.ndim == 5:
+                if primary_index < debug_depth_target.shape[1]:
+                    debug_depth_target = debug_depth_target[:, primary_index]
+                    if debug_depth_target.ndim == 4 and debug_depth_target.shape[-1] == 1:
+                        debug_depth_target = debug_depth_target.permute(0, 3, 1, 2)
+                else:
+                    debug_depth_target = None
+            debug_depth_conf = getattr(self, "_gaussian_vggt_depth_conf", None)
+            if debug_depth_conf is not None and debug_depth_conf.ndim in (4, 5):
+                if primary_index < debug_depth_conf.shape[1]:
+                    debug_depth_conf = debug_depth_conf[:, primary_index]
+                    if debug_depth_conf.ndim == 4 and debug_depth_conf.shape[-1] == 1:
+                        debug_depth_conf = debug_depth_conf.squeeze(-1)
+                else:
+                    debug_depth_conf = None
 
         if depth_map is not None and edge_weight > 0.0:
             edge_loss = edge_weight * compute_edge_smooth_loss(targets[primary_name], depth_map)
@@ -1313,6 +1339,7 @@ class FlowMatchingV2(FlowMatchingV1):
         camera_intrinsics=None,
         camera_extrinsics=None,
         render_target_images=None,
+        gaussian_depth_targets=None,
     ) -> Tensor:
         dtype = state.dtype
         device = state.device
@@ -1380,6 +1407,7 @@ class FlowMatchingV2(FlowMatchingV1):
             camera_intrinsics=camera_intrinsics,
             camera_extrinsics=camera_extrinsics,
             render_target_images=render_target_images,
+            gaussian_depth_targets=gaussian_depth_targets,
         )
         align_metrics = dict(gaussian_render_metrics)
         if self.use_depth_align:
@@ -1816,6 +1844,7 @@ class LingbotVlaV2Policy(PreTrainedModel):
         camera_intrinsics=None,
         camera_extrinsics=None,
         render_target_images=None,
+        gaussian_depth_targets=None,
         **kwargs
     ) -> tuple[Tensor, dict[str, Tensor]]:
         loss_dict = {}
@@ -1854,6 +1883,7 @@ class LingbotVlaV2Policy(PreTrainedModel):
             camera_intrinsics=camera_intrinsics,
             camera_extrinsics=camera_extrinsics,
             render_target_images=render_target_images,
+            gaussian_depth_targets=gaussian_depth_targets,
         )
 
         if joint_mask is not None:

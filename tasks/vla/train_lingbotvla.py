@@ -217,7 +217,8 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_opacity_reg_weight: float = field(default=0.01, metadata={"help": "Gaussian opacity regularization weight."})
     gaussian_edge_smooth_weight: float = field(default=0.01, metadata={"help": "Edge-aware depth smoothness weight."})
     gaussian_use_vggt_depth_target: bool = field(default=True, metadata={"help": "Use VGGT depth as the pseudo target."})
-    gaussian_depth_loss_weight: float = field(default=0.1, metadata={"help": "VGGT pseudo-depth loss weight."})
+    gaussian_use_offline_depth_target: bool = field(default=True, metadata={"help": "Use offline DA2 depth loaded from the dataset."})
+    gaussian_depth_loss_weight: float = field(default=0.1, metadata={"help": "Gaussian pseudo-depth loss weight."})
     gaussian_depth_conf_threshold: float = field(default=0.5, metadata={"help": "VGGT depth confidence threshold."})
     gaussian_depth_min: float = field(default=0.05, metadata={"help": "Minimum depth used by the depth loss."})
     gaussian_depth_max: float = field(default=8.0, metadata={"help": "Maximum depth used by the depth loss."})
@@ -945,6 +946,7 @@ def main():
                 # even when depth/video teachers are disabled.
                 pil_images = micro_batch.pop('pil_images', None)
                 render_target_images = pil_images
+                gaussian_depth_targets = micro_batch.pop('gaussian_depth_targets', None)
                 # [SIDA--]
                 if use_depth_align:
                     with torch.no_grad():
@@ -984,6 +986,7 @@ def main():
                         future_video_cls_targets=future_video_cls_targets,
                         future_video_current_patch=future_video_current_dino,
                         render_target_images=render_target_images,
+                        gaussian_depth_targets=gaussian_depth_targets,
                     )
                     if len(model_outputs) == 6:
                         loss, vla_loss, depth_loss, seq_wise_loss, loss_log, depth_preds = model_outputs

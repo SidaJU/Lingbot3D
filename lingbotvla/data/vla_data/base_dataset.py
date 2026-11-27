@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 # [SIDA--]
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision.transforms.v2 import Resize
 
@@ -230,6 +231,21 @@ class VLADataset(Dataset):
             )
         # [SIDA--]
 
+        # [SIDA++] offline Depth Anything V2 targets for Gaussian depth loss
+        depth_root = getattr(dataset_config, "depth_metadata_root", None)
+        self.depth_metadata_index = None
+        if depth_root:
+            from ...models.vla.geometry.depth_metadata import DepthSidecarIndex, resolve_depth_metadata_root
+
+            depth_root = resolve_depth_metadata_root(depth_root, repo_id)
+            self.depth_metadata_index = DepthSidecarIndex(depth_root)
+            self._depth_camera_names = [
+                key.rsplit('.', 1)[-1] for key in self.feature_transform.feature_config.images
+            ]
+            self._depth_image_hw = tuple(image_size)
+            self.feature_transform.feature_to_keep.add("gaussian_depth_targets")
+        # [SIDA--]
+
         self.return_item = return_item
         self.transform = transform
 
@@ -305,6 +321,27 @@ class VLADataset(Dataset):
                 np.stack([matrix["cam2world_gl"] for matrix in matrices])
             )
             raw_item["camera_valid_mask"] = torch.ones(len(matrices), dtype=torch.bool)
+        # [SIDA--]
+        # [SIDA++] load offline DA2 depth and align it with the RGB camera order
+        if self.depth_metadata_index is not None:
+            episode_index = int(torch.as_tensor(raw_item["episode_index"]).reshape(-1)[0].item())
+            frame_index = int(torch.as_tensor(raw_item["frame_index"]).reshape(-1)[0].item())
+            depths = torch.from_numpy(
+                np.stack([
+                    self.depth_metadata_index.for_frame(
+                        episode_index, frame_index, camera_name
+                    )
+                    for camera_name in self._depth_camera_names
+                ])
+            ).float()
+            if depths.shape[-2:] != self._depth_image_hw:
+                depths = F.interpolate(
+                    depths.unsqueeze(1),
+                    size=self._depth_image_hw,
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(1)
+            raw_item["gaussian_depth_targets"] = depths.unsqueeze(1)
         # [SIDA--]
         if (
             self.use_future_image

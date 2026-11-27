@@ -10,3 +10,18 @@ __pycache__/
 wandb/
 runs/
 output/
+log.txt
+
+# Machine-local scratch and generated assets. Portable data belongs under
+# data/ (see data/README.md); these are never part of the repository.
+/envs/
+/cache/
+/models/
+/generate_all_logs/
+*.log
+third_party/DepthAnythingV2/
+third_party/GaussianDream/
+third_party/RoboTwin/
+third_party/vggt_pkg/
+third_party/vggt_page.html
+third_party/vggt_tree.json

@@ -194,6 +194,15 @@ class DataArguments:
             )
         },
     )
+    depth_metadata_root: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "Directory containing offline Depth Anything V2 sidecar manifest.json files. "
+                "Leave unset to disable offline Gaussian depth targets."
+            )
+        },
+    )
     # [SIDA--]
     data_tag: Literal["default", "mmtag"] = field(
         default="default",

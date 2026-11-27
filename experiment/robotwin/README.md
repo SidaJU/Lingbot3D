@@ -108,15 +108,17 @@ and `cam2world_gl` for each recorded camera. The official LeRobot converter
 does not copy these fields, so extract them before or alongside conversion.
 Run the two commands in the RoboTwin data environment with `h5py` and `Pillow`:
 
+From this repository's root, with raw downloads under `data/robotwin2_raw/`:
+
 ```bash
 python experiment/robotwin/build_camera_episode_map.py \
-  --raw-root /path/to/RoboTwin/data/<task>/<setting>/data \
-  --processed-root /path/to/RoboTwin/policy/pi0/processed_data/<task-setting-num> \
-  --output /path/to/RoboTwin/camera_sidecars/episodes.json
+  --raw-root ./data/robotwin2_raw/by_task/<task>/<setting>/data \
+  --processed-root ./data/robotwin2_raw/by_task/<task>/<setting> \
+  --output ./data/camera_sidecars/episodes.json
 
 python experiment/robotwin/extract_camera_metadata.py \
-  --episode-map /path/to/RoboTwin/camera_sidecars/episodes.json \
-  --output-root /path/to/RoboTwin/camera_sidecars
+  --episode-map ./data/camera_sidecars/episodes.json \
+  --output-root ./data/camera_sidecars
 ```
 
 The map explicitly verifies the official preprocessing rule (`T` raw frames
@@ -141,6 +143,32 @@ default training renderer.
 The server environment must provide the VGGT package/checkpoint and compile the
 CUDA rasterizer before enabling the branch. Set `gaussian_vggt_model_path` to
 the downloaded `VGGT-1B/model.pt` and keep `gaussian_use_fused_rasterizer: true`.
+
+### 6.2 Offline Depth Anything V2 depth targets
+
+Following GaussianDream, the Gaussian depth loss uses DA2 depth predicted once
+from RGB and stored beside each dataset — no depth teacher runs in training.
+Clone DA2 into `third_party/`, download the Small checkpoint, then generate
+sidecars into `data/depth_sidecars/`:
+
+```bash
+git clone --depth 1 https://github.com/DepthAnything/Depth-Anything-V2.git \
+  third_party/DepthAnythingV2
+mkdir -p third_party/DepthAnythingV2/checkpoints
+hf download depth-anything/Depth-Anything-V2-Small depth_anything_v2_vits.pth \
+  --local-dir third_party/DepthAnythingV2/checkpoints
+
+python tools/generate_depth_for_robotwin.py \
+  --dataset-manifest ./data/training_data/robotwin_a10080.txt \
+  --output-root ./data/depth_sidecars \
+  --checkpoint ./third_party/DepthAnythingV2/checkpoints/depth_anything_v2_vits.pth \
+  --model-size small --batch-size 16 --device cuda
+```
+
+The 4D configs set `gaussian_use_vggt_depth_target: false` and
+`gaussian_use_offline_depth_target: true`; the loader reads
+`data.depth_metadata_root` into `gaussian_depth_targets`. See
+[data/README.md](../../data/README.md) for the full layout and download list.
 
 <!-- [SIDA--] -->
 

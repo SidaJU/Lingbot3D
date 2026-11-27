@@ -1,0 +1,10 @@
+robotwin ./data/datasets/robotwin_smoke_v2
+robotwin ./data/datasets/robotwin_adjust_bottle_randomized_500
+robotwin ./data/datasets/robotwin_click_bell_clean_50
+robotwin ./data/datasets/robotwin_click_bell_randomized_500
+robotwin ./data/datasets/robotwin_lift_pot_clean_50
+robotwin ./data/datasets/robotwin_lift_pot_randomized_500
+robotwin ./data/datasets/robotwin_open_laptop_clean_50
+robotwin ./data/datasets/robotwin_open_laptop_randomized_500
+robotwin ./data/datasets/robotwin_place_shoe_clean_50
+robotwin ./data/datasets/robotwin_place_shoe_randomized_500

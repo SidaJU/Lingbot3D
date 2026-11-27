@@ -70,8 +70,9 @@ This branch adds a Gaussian reconstruction path on top of LingBot-VLA 2.0.
 All external assets are kept inside the repository under `data/`, and every
 path in the configs is relative to the repository root. See
 [data/README.md](data/README.md) for model download commands, dataset layout,
-camera sidecars and output locations. No machine-specific absolute paths are
-required.
+camera sidecars, offline Depth Anything V2 targets and output locations. No
+machine-specific absolute paths are required: clone to any directory, follow
+`data/README.md` once, and the commands below work unchanged.
 
 From the repository root:
 
@@ -79,13 +80,15 @@ From the repository root:
 conda activate lingbotvla
 
 bash train.sh tasks/vla/train_lingbotvla.py \
-  configs/vla/robotwin/robotwin_gaussian_single_view.yaml \
+  configs/vla/robotwin/robotwin_4d_topview.yaml \
   --data.data_name multi
 ```
 
-The provided config uses `camera_top` as the only render-supervision view,
-keeps VGGT pseudo-depth supervision enabled, and resolves all models, datasets,
-sidecars and outputs under `./data`.
+The recommended config uses `camera_top` as the only render-supervision view
+and GaussianDream-style offline DA2 depth targets (VGGT depth head disabled).
+It resolves all models, datasets, sidecars and outputs under `./data`. The
+single-view config without the 4D teachers is also available as
+`configs/vla/robotwin/robotwin_gaussian_single_view.yaml`.
 
 ## Model Download
 

@@ -25,6 +25,7 @@ data:
   # [SIDA++] add by SidaZhu for optional raw RoboTwin camera K/T sidecars
   # Camera K/T sidecars live inside the project data/ tree.
   camera_metadata_root: ./data/camera_sidecars
+  depth_metadata_root: ./data/depth_sidecars
   # [SIDA--]
   norm_type:
     - arm.position: bounds_99_woclip
@@ -169,12 +170,13 @@ train:
   gaussian_opacity_reg_weight: 0.01
   gaussian_edge_smooth_weight: 0.01
   # VGGT depth head provides pseudo depth targets for Gaussian depth supervision.
-  gaussian_use_vggt_depth_target: true
+  gaussian_use_vggt_depth_target: false
+  gaussian_use_offline_depth_target: true
   gaussian_depth_loss_weight: 0.1
   # VGGT depth_conf is 1+exp(logit), so a useful threshold must be > 1.
   gaussian_depth_conf_threshold: 2.0
-  gaussian_depth_min: 0.05
-  gaussian_depth_max: 8.0
+  gaussian_depth_min: 0.0
+  gaussian_depth_max: 1000000000.0
   # VGGT pseudo depth is not metric-calibrated; align per-sample scale in log space.
   gaussian_depth_scale_align: true
   # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after

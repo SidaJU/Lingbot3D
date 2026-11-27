@@ -36,6 +36,7 @@ data:
     - camera_wrist_left
     - camera_wrist_right
   camera_metadata_root: ./data/camera_sidecars
+  depth_metadata_root: ./data/depth_sidecars
   norm_type:
     - arm.position: bounds_99_woclip
     - end.position: bounds_99_woclip
@@ -175,12 +176,13 @@ train:
   gaussian_scale_reg_weight: 0.001
   gaussian_opacity_reg_weight: 0.01
   gaussian_edge_smooth_weight: 0.01
-  gaussian_use_vggt_depth_target: true
+  gaussian_use_vggt_depth_target: false
+  gaussian_use_offline_depth_target: true
   gaussian_depth_loss_weight: 0.1
   # VGGT depth_conf is 1+exp(logit), so values below 1 cannot filter anything.
   gaussian_depth_conf_threshold: 2.0
-  gaussian_depth_min: 0.05
-  gaussian_depth_max: 8.0
+  gaussian_depth_min: 0.0
+  gaussian_depth_max: 1000000000.0
   # VGGT pseudo depth is not metric-calibrated; align per-sample scale in log space.
   gaussian_depth_scale_align: true
   gaussian_use_lpips: true

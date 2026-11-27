@@ -111,6 +111,7 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_opacity_reg_weight: float = 0.01,
         gaussian_edge_smooth_weight: float = 0.01,
         gaussian_use_vggt_depth_target: bool = True,
+        gaussian_use_offline_depth_target: bool = True,
         gaussian_depth_loss_weight: float = 0.1,
         gaussian_depth_conf_threshold: float = 0.5,
         gaussian_depth_min: float = 0.05,
@@ -163,6 +164,7 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_opacity_reg_weight = gaussian_opacity_reg_weight
         self.gaussian_edge_smooth_weight = gaussian_edge_smooth_weight
         self.gaussian_use_vggt_depth_target = gaussian_use_vggt_depth_target
+        self.gaussian_use_offline_depth_target = gaussian_use_offline_depth_target
         self.gaussian_depth_loss_weight = gaussian_depth_loss_weight
         self.gaussian_depth_conf_threshold = gaussian_depth_conf_threshold
         self.gaussian_depth_min = gaussian_depth_min

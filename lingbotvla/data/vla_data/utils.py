@@ -489,6 +489,8 @@ class FeatureTransform:
         for camera_key in ('camera_intrinsics', 'camera_extrinsics', 'camera_cam2world', 'camera_valid_mask'):
             if camera_key in item:
                 batch_dict[camera_key] = item[camera_key]
+        if 'gaussian_depth_targets' in item:
+            batch_dict['gaussian_depth_targets'] = item['gaussian_depth_targets']
         # [SIDA--]
         if image_grid_thw is not None:
             batch_dict['image_grid_thw'] = image_grid_thw

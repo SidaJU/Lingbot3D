@@ -1,12 +1,10 @@
-# Keep only the directory skeleton and manifests in Git. Models, datasets,
-# sidecars, checkpoints and debug images stay local to each machine.
+# Keep only the dataset directory skeleton and manifests in Git. Datasets,
+# sidecars and checkpoints stay local to each machine. Models belong in the
+# repository-root models/ directory, third-party code in third_party/, and
+# training runs in runs/.
 *
 !.gitignore
 !README.md
-!models/
-!models/.gitkeep
-!models/lpips_cache/
-!models/lpips_cache/.gitkeep
 !datasets/
 !datasets/.gitkeep
 !lerobot/
@@ -20,5 +18,3 @@
 !training_data/
 !training_data/robotwin.txt
 !training_data/robotwin_a10080.txt
-!outputs/
-!outputs/.gitkeep

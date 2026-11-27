@@ -1,44 +1,60 @@
-# Project-local data root
+# Project data root
 
-This directory is the **only** place for external assets used by the Gaussian 3D
-configs. Every path in `configs/vla/robotwin/*.yaml`, in the manifests under
-`data/training_data/`, and in the data preparation tools is **relative to the
-repository root**. Run all commands from the repository root after cloning, on
-any machine and at any filesystem location. No machine-specific absolute paths
-are required or allowed.
+`data/` holds **datasets only**: converted LeRobot datasets, raw RoboTwin
+downloads, per-episode camera/depth sidecars, and the small text manifests that
+list which datasets to train on.
+
+Pretrained weights live in the repository-root `models/` directory; third-party
+models and their source code live in `third_party/`; training checkpoints and
+logs live in `runs/`. Every path in `configs/vla/robotwin/*.yaml`, in the
+manifests under `data/training_data/`, and in the preparation tools is relative
+to the repository root. Run all commands from the repository root after cloning,
+on any machine and at any filesystem location. No machine-specific absolute
+paths are required or allowed.
 
 Large files (model weights, datasets, camera/depth sidecars, checkpoints,
 TensorBoard runs, debug images) stay local. Git only tracks the directory
-skeleton (`.gitkeep`), this README and the small text manifests.
+skeletons (`.gitkeep`), the manifests and the small third-party source that is
+vendored in `third_party/`.
 
-## Layout — what belongs in each folder
+## Layout — what belongs where
 
 ```text
-data/
-├── models/                          # all pretrained weights and caches
-│   ├── lingbot-vla-v2-6b/           # VLA backbone + depth/ + dino_video/ teachers
-│   ├── Qwen3-VL-4B-Instruct/        # tokenizer / VLM backbone
-│   ├── moge-2-vitb-normal/
-│   │   └── model.pt                 # MoGe normal teacher
-│   ├── VGGT-1B/                     # model.pt + config.json (VGGT aggregator)
-│   └── lpips_cache/                 # optional offline LPIPS VGG16 cache
-│       └── hub/checkpoints/vgg16-397923af.pth
+data/                                # datasets and dataset metadata only
 ├── datasets/                        # LeRobot datasets consumed by training
 │   └── <repo_id>/                   # one directory per entry in a manifest
-├── lerobot/                         # optional HF_LEROBOT_HOME cache for generated datasets
+├── lerobot/                         # optional HF_LEROBOT_HOME cache
 ├── robotwin2_raw/                   # raw RoboTwin downloads and HDF5 (by_task/)
 ├── camera_sidecars/                 # per-episode camera intrinsics/extrinsics
 │   └── <repo_id>/
 │       ├── manifest.json
 │       └── episode_*.camera.npz
-├── depth_sidecars/                  # offline Depth Anything V2 targets (Gaussian depth loss)
+├── depth_sidecars/                  # offline Depth Anything V2 targets
 │   └── <repo_id>/
 │       ├── manifest.json
 │       └── episode_*.depth.npz
-├── training_data/                   # dataset manifests read by data.train_path
-│   ├── robotwin.txt                 # minimal single-dataset example
-│   └── robotwin_a10080.txt          # full RoboTwin list used by the 4D configs
-└── outputs/                         # checkpoints, TensorBoard runs, Gaussian debug images
+└── training_data/                   # dataset manifests read by data.train_path
+    ├── robotwin.txt                 # minimal single-dataset example
+    └── robotwin_a10080.txt          # full RoboTwin list used by the 4D configs
+
+models/                              # all pretrained weights and caches
+├── lingbot-vla-v2-6b/               # VLA backbone + depth/ + dino_video/ teachers
+├── Qwen3-VL-4B-Instruct/            # tokenizer / VLM backbone
+├── moge-2-vitb-normal/
+│   └── model.pt                     # MoGe normal teacher
+├── VGGT-1B/                         # model.pt + config.json (VGGT aggregator)
+└── lpips_cache/                     # optional offline LPIPS VGG16 cache
+    └── hub/checkpoints/vgg16-397923af.pth
+
+third_party/                         # third-party models and source code
+├── DepthAnythingV2/                 # DA2 code + checkpoints/ (see section 4)
+├── VGGT/                            # vendored feature_only VGGT fork
+├── GaussianDream/                   # reference implementation
+├── RoboTwin/                        # RoboTwin 2.0 source
+└── diff-gaussian-rasterization/     # vendored CUDA rasterizer
+
+runs/                                # checkpoints, TensorBoard, Gaussian debug
+└── <run_name>/
 ```
 
 `data/camera_sidecars/<name>` and `data/depth_sidecars/<name>` use the exact
@@ -46,22 +62,22 @@ dataset directory name (the last path component of the manifest entry). The
 loader resolves them automatically via `data.camera_metadata_root` and
 `data.depth_metadata_root`.
 
-## What the training configs read from `data/`
+## What the training configs read
 
 | Config key | Resolves to |
 |---|---|
-| `model.model_path` | `./data/models/lingbot-vla-v2-6b` |
-| `model.tokenizer_path` | `./data/models/Qwen3-VL-4B-Instruct` |
 | `data.train_path` | `./data/training_data/<manifest>.txt` |
 | `data.robot_config_root` | `./configs/robot_configs` |
 | `data.camera_metadata_root` | `./data/camera_sidecars` |
 | `data.depth_metadata_root` | `./data/depth_sidecars` |
-| `train.output_dir` | `./data/outputs/<run_name>` |
-| `train.gaussian_lpips_cache_dir` | `./data/models/lpips_cache` |
-| `train.gaussian_vggt_model_path` | `./data/models/VGGT-1B/model.pt` |
-| `train.*.moge_path` | `./data/models/moge-2-vitb-normal/model.pt` |
-| `train.*.morgbd_path` | `./data/models/lingbot-vla-v2-6b/depth/model.pt` |
-| `train.*.ckpt_path` / `config_path` | `./data/models/lingbot-vla-v2-6b/dino_video/` |
+| `model.model_path` | `./models/lingbot-vla-v2-6b` |
+| `model.tokenizer_path` | `./models/Qwen3-VL-4B-Instruct` |
+| `train.output_dir` | `./runs/<run_name>` |
+| `train.gaussian_lpips_cache_dir` | `./models/lpips_cache` |
+| `train.gaussian_vggt_model_path` | `./models/VGGT-1B/model.pt` |
+| `train.*.moge_path` | `./models/moge-2-vitb-normal/model.pt` |
+| `train.*.morgbd_path` | `./models/lingbot-vla-v2-6b/depth/model.pt` |
+| `train.*.ckpt_path` / `config_path` | `./models/lingbot-vla-v2-6b/dino_video/` |
 
 A manifest line is `<data_name> <path relative to the repository root>`:
 
@@ -69,39 +85,43 @@ A manifest line is `<data_name> <path relative to the repository root>`:
 robotwin ./data/datasets/robotwin_smoke_v2
 ```
 
-## 1. Download pretrained models
+## 1. Download pretrained models into `models/`
 
 Run from the repository root after `bash tools/create_train_env.sh`:
 
 ```bash
-mkdir -p data/models
+mkdir -p models
 
 hf download robbyant/lingbot-vla-v2-6b \
-  --repo-type model --local-dir data/models/lingbot-vla-v2-6b
+  --repo-type model --local-dir models/lingbot-vla-v2-6b
 
 hf download Qwen/Qwen3-VL-4B-Instruct \
-  --repo-type model --local-dir data/models/Qwen3-VL-4B-Instruct
+  --repo-type model --local-dir models/Qwen3-VL-4B-Instruct
 
 hf download Ruicheng/moge-2-vitb-normal \
-  --repo-type model --local-dir data/models/moge-2-vitb-normal
+  --repo-type model --local-dir models/moge-2-vitb-normal
 
 hf download facebook/VGGT-1B model.pt config.json \
   --revision 769a73bd2e0a03215e13f53f06943702d5396c7b \
-  --local-dir data/models/VGGT-1B
+  --local-dir models/VGGT-1B
 ```
 
 If LPIPS must run offline, put the VGG16 backbone at
-`data/models/lpips_cache/hub/checkpoints/vgg16-397923af.pth`, or let `lpips`
+`models/lpips_cache/hub/checkpoints/vgg16-397923af.pth`, or let `lpips`
 download it on first use into that cache root.
 
 Verify:
 
 ```bash
-test -f data/models/VGGT-1B/model.pt
-test -f data/models/lingbot-vla-v2-6b/depth/model.pt
-test -f data/models/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth
-test -f data/models/moge-2-vitb-normal/model.pt
+test -f models/VGGT-1B/model.pt
+test -f models/lingbot-vla-v2-6b/depth/model.pt
+test -f models/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth
+test -f models/moge-2-vitb-normal/model.pt
 ```
+
+Third-party source and its weights go in `third_party/`, never in `models/` or
+`data/`. The setup script installs the vendored `VGGT/` and
+`diff-gaussian-rasterization/`; section 4 explains the DA2 code and checkpoint.
 
 ## 2. Raw RoboTwin data and LeRobot conversion
 
@@ -201,4 +221,4 @@ bash train.sh tasks/vla/train_lingbotvla.py \
 ```
 
 Outputs (checkpoints, TensorBoard events, Gaussian debug images) are written
-to `train.output_dir` under `./data/outputs/` and are never committed.
+to `train.output_dir` under `./runs/` and are never committed.

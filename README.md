@@ -67,9 +67,10 @@ the installed PyTorch CUDA build is required to compile the rasterizer.
 ## Gaussian 3D quick start
 
 This branch adds a Gaussian reconstruction path on top of LingBot-VLA 2.0.
-All external assets are kept inside the repository under `data/`, and every
-path in the configs is relative to the repository root. See
-[data/README.md](data/README.md) for model download commands, dataset layout,
+Datasets live under `data/`, pretrained weights under `models/`, third-party
+models and source under `third_party/`, and training outputs under `runs/`.
+Every path in the configs is relative to the repository root. See
+[data/README.md](data/README.md) for download commands, dataset layout,
 camera sidecars, offline Depth Anything V2 targets and output locations. No
 machine-specific absolute paths are required: clone to any directory, follow
 `data/README.md` once, and the commands below work unchanged.
@@ -86,8 +87,9 @@ bash train.sh tasks/vla/train_lingbotvla.py \
 
 The recommended config uses `camera_top` as the only render-supervision view
 and GaussianDream-style offline DA2 depth targets (VGGT depth head disabled).
-It resolves all models, datasets, sidecars and outputs under `./data`. The
-single-view config without the 4D teachers is also available as
+It reads models from `./models`, datasets and sidecars from `./data`, and
+writes outputs to `./runs`. The single-view config without the 4D teachers is
+also available as
 `configs/vla/robotwin/robotwin_gaussian_single_view.yaml`.
 
 ## Model Download

@@ -12,11 +12,13 @@ runs/
 output/
 log.txt
 
-# Machine-local scratch and generated assets. Portable data belongs under
-# data/ (see data/README.md); these are never part of the repository.
+# Machine-local scratch and generated assets. Datasets live under data/ and
+# pretrained weights under models/ (see data/README.md); large assets are
+# never part of the repository.
 /envs/
 /cache/
-/models/
+/models/*
+!/models/.gitkeep
 /generate_all_logs/
 *.log
 third_party/DepthAnythingV2/

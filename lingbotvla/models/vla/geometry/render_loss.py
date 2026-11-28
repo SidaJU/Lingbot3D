@@ -169,6 +169,7 @@ def da2_disparity_to_metric_depth(
     disparity: torch.Tensor,
     min_depth: float = 0.05,
     max_depth: float = 8.0,
+    disparity_offset: float = 1.0,
 ) -> torch.Tensor:
     """Convert Depth Anything V2 relative/disparity output to metric depth.
 
@@ -178,15 +179,18 @@ def da2_disparity_to_metric_depth(
     target in the same monotonic space as the prediction, which is required by
     the official linear L1 depth loss.
 
-    The conversion is deterministic and elementwise. A lower bound of 1 is
-    imposed on the disparity so far-background zeros clamp to ``max_depth``
-    instead of producing infinities.
+    The conversion is deterministic and elementwise. A positive
+    ``disparity_offset`` keeps the inverse finite and spreads low-disparity
+    background values instead of hard-clamping every ``disp <= 1`` pixel to the
+    same ``max_depth`` plateau. The final clamp to ``[min_depth, max_depth]``
+    only enforces the Gaussian decoder output range.
     """
     if max_depth <= min_depth:
         raise ValueError(f"max_depth must exceed min_depth, got {min_depth} and {max_depth}")
+    if disparity_offset <= 0.0:
+        raise ValueError(f"disparity_offset must be positive, got {disparity_offset}")
     disp = torch.nan_to_num(disparity.float(), nan=0.0, posinf=max_depth, neginf=0.0)
-    disp = disp.clamp_min(1.0)
-    metric = max_depth / disp
+    metric = max_depth / (disp + float(disparity_offset))
     return metric.clamp(min_depth, max_depth)
 
 

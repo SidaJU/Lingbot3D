@@ -113,11 +113,13 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_use_vggt_depth_target: bool = True,
         gaussian_use_offline_depth_target: bool = True,
         gaussian_depth_loss_weight: float = 0.1,
+        gaussian_depth_current_frame_weight: float = 0.5,
         gaussian_depth_conf_threshold: float = 0.5,
         gaussian_depth_min: float = 0.05,
         gaussian_depth_max: float = 8.0,
         gaussian_depth_target_is_disparity: bool = True,
         gaussian_depth_target_metric_max: float = 8.0,
+        gaussian_depth_target_disparity_offset: float = 1.0,
         gaussian_depth_scale_align: bool = False,
         gaussian_use_lpips: bool = False,
         gaussian_lpips_weight: float = 0.1,
@@ -174,11 +176,13 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_use_vggt_depth_target = gaussian_use_vggt_depth_target
         self.gaussian_use_offline_depth_target = gaussian_use_offline_depth_target
         self.gaussian_depth_loss_weight = gaussian_depth_loss_weight
+        self.gaussian_depth_current_frame_weight = gaussian_depth_current_frame_weight
         self.gaussian_depth_conf_threshold = gaussian_depth_conf_threshold
         self.gaussian_depth_min = gaussian_depth_min
         self.gaussian_depth_max = gaussian_depth_max
         self.gaussian_depth_target_is_disparity = gaussian_depth_target_is_disparity
         self.gaussian_depth_target_metric_max = gaussian_depth_target_metric_max
+        self.gaussian_depth_target_disparity_offset = gaussian_depth_target_disparity_offset
         self.gaussian_depth_scale_align = gaussian_depth_scale_align
         self.gaussian_use_lpips = gaussian_use_lpips
         self.gaussian_lpips_weight = gaussian_lpips_weight

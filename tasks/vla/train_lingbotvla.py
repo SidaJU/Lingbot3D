@@ -219,6 +219,7 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_use_vggt_depth_target: bool = field(default=True, metadata={"help": "Use VGGT depth as the pseudo target."})
     gaussian_use_offline_depth_target: bool = field(default=True, metadata={"help": "Use offline DA2 depth loaded from the dataset."})
     gaussian_depth_loss_weight: float = field(default=0.1, metadata={"help": "Gaussian pseudo-depth loss weight."})
+    gaussian_depth_current_frame_weight: float = field(default=0.5, metadata={"help": "Official current-frame reconstruction multiplier for Gaussian depth."})
     gaussian_depth_conf_threshold: float = field(default=0.5, metadata={"help": "VGGT depth confidence threshold."})
     gaussian_depth_min: float = field(default=0.05, metadata={"help": "Minimum depth used by the depth loss."})
     gaussian_depth_max: float = field(default=8.0, metadata={"help": "Maximum depth used by the depth loss."})
@@ -229,6 +230,10 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_depth_target_metric_max: float = field(
         default=8.0,
         metadata={"help": "Far-plane metric depth used when converting DA2 disparity to depth."},
+    )
+    gaussian_depth_target_disparity_offset: float = field(
+        default=1.0,
+        metadata={"help": "Positive offset used for smooth DA2 disparity-to-depth inversion."},
     )
     gaussian_depth_scale_align: bool = field(
         default=False,

@@ -170,12 +170,16 @@ train:
   gaussian_use_vggt_depth_target: false
   gaussian_use_offline_depth_target: true
   gaussian_depth_loss_weight: 0.1
+  # Official current-frame reconstruction multiplier; depth stays outside RGB render weight.
+  gaussian_depth_current_frame_weight: 0.5
   gaussian_depth_conf_threshold: 0.5
-  gaussian_depth_min: 0.0
-  gaussian_depth_max: 1000000000.0
+  # Decoder emits 8*sigmoid(depth_logits); keep the loss range identical.
+  gaussian_depth_min: 0.05
+  gaussian_depth_max: 8.0
   # DA2 sidecars store relative disparity (near=large); convert to metric depth.
   gaussian_depth_target_is_disparity: true
   gaussian_depth_target_metric_max: 8.0
+  gaussian_depth_target_disparity_offset: 1.0
   gaussian_depth_scale_align: false
   # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after
   # `pip install lpips` succeeds on the training machine.

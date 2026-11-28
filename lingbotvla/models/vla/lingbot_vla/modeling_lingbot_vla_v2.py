@@ -1116,6 +1116,8 @@ class FlowMatchingV2(FlowMatchingV1):
 
         # Match GaussianDream: average photometric loss across views.
         render_loss = torch.stack(view_losses).mean()
+        # Depth is a separate GaussianDream supervision term.
+        depth_term = render_loss.new_zeros(())
 
         # GaussianDream helper also adds scale/opacity regularization and
         # edge-aware depth smoothness before the outer render loss weight.
@@ -1162,6 +1164,9 @@ class FlowMatchingV2(FlowMatchingV1):
                         debug_depth_target,
                         min_depth=0.05,
                         max_depth=float(getattr(self.config, "gaussian_depth_target_metric_max", 8.0)),
+                        disparity_offset=float(
+                            getattr(self.config, "gaussian_depth_target_disparity_offset", 1.0)
+                        ),
                     )
         else:
             debug_depth_target = getattr(self, "_gaussian_vggt_depth", None)
@@ -1199,11 +1204,11 @@ class FlowMatchingV2(FlowMatchingV1):
                 max_depth=float(getattr(self.config, "gaussian_depth_max", 8.0)),
                 scale_align=bool(getattr(self.config, "gaussian_depth_scale_align", False)),
             )
-            weighted_depth_loss = depth_weight * depth_loss
+            current_frame_weight = float(getattr(self.config, "gaussian_depth_current_frame_weight", 0.5))
+            depth_term = current_frame_weight * depth_weight * depth_loss
             metrics["gaussian_render/depth_loss"] = depth_loss.detach()
-            metrics["gaussian_render/depth_loss_weighted"] = weighted_depth_loss.detach()
-            render_loss = render_loss + weighted_depth_loss
-        metrics["gaussian_render/total_raw"] = render_loss.detach()
+            metrics["gaussian_render/depth_loss_weighted"] = depth_term.detach()
+        metrics["gaussian_render/total_raw"] = (render_loss + depth_term).detach()
 
         # [SIDA++] optional diagnostics for the Gaussian integration stage.
         debug_enabled = os.environ.get("LINGBOT_GAUSSIAN_DEBUG", "0").lower() in {"1", "true", "yes"}
@@ -1333,7 +1338,8 @@ class FlowMatchingV2(FlowMatchingV1):
             if is_interval_dump:
                 self._gaussian_debug_saved_step = current_step
 
-        return weight * render_loss, metrics
+        # Keep depth outside the RGB render-loss multiplier, as in the official current-frame path.
+        return weight * render_loss + depth_term, metrics
     # [SIDA--]
 
     def forward(

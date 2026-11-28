@@ -488,6 +488,9 @@ class FlowMatchingV2(FlowMatchingV1):
                 self.qwenvl_with_expert,
                 rank=int(getattr(self.config, "gaussian_lora_rank", 8)),
                 alpha=int(getattr(self.config, "gaussian_lora_alpha", 16)),
+                target_modules=tuple(
+                    getattr(self.config, "gaussian_vlm_lora_targets", ("q_proj", "k_proj", "v_proj", "o_proj"))
+                ),
                 freeze_action_expert=not staged_training,
             )
         # [SIDA--]
@@ -523,6 +526,13 @@ class FlowMatchingV2(FlowMatchingV1):
                 feature_dim=int(getattr(self.config, "gaussian_vggt_feature_dim", 2048)),
                 freeze=bool(getattr(self.config, "gaussian_vggt_freeze", True)),
                 use_depth=bool(getattr(self.config, "gaussian_use_vggt_depth_target", True)),
+                use_lora=bool(getattr(self.config, "gaussian_vggt_use_lora", True)),
+                lora_rank=int(getattr(self.config, "gaussian_vggt_lora_rank", 8)),
+                lora_alpha=float(getattr(self.config, "gaussian_vggt_lora_alpha", 32.0)),
+                lora_dropout=float(getattr(self.config, "gaussian_vggt_lora_dropout", 0.05)),
+                lora_targets=tuple(
+                    getattr(self.config, "gaussian_vggt_lora_targets", ("qkv", "proj", "fc1", "fc2"))
+                ),
             )
             self._gaussian_vggt_depth = None
             self._gaussian_vggt_depth_conf = None

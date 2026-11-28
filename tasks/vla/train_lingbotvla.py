@@ -233,12 +233,27 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_vggt_model_path: Optional[str] = field(default=None, metadata={"help": "VGGT checkpoint path."})
     gaussian_vggt_image_size: int = field(default=518, metadata={"help": "VGGT input image size."})
     gaussian_vggt_feature_dim: int = field(default=2048, metadata={"help": "VGGT feature width."})
-    gaussian_vggt_freeze: bool = field(default=True, metadata={"help": "Freeze VGGT backbone."})
+    gaussian_vggt_freeze: bool = field(default=True, metadata={"help": "Freeze VGGT pretrained weights."})
+    gaussian_vggt_use_lora: bool = field(
+        default=True,
+        metadata={"help": "Use GaussianDream-style LoRA in the VGGT aggregator."},
+    )
+    gaussian_vggt_lora_rank: int = field(default=8, metadata={"help": "VGGT aggregator LoRA rank."})
+    gaussian_vggt_lora_alpha: float = field(default=32.0, metadata={"help": "VGGT aggregator LoRA alpha."})
+    gaussian_vggt_lora_dropout: float = field(default=0.05, metadata={"help": "VGGT aggregator LoRA dropout."})
+    gaussian_vggt_lora_targets: list[str] = field(
+        default_factory=lambda: ["qkv", "proj", "fc1", "fc2"],
+        metadata={"help": "VGGT aggregator Linear names receiving official-style LoRA."},
+    )
     gaussian_camera_config: Optional[str] = field(default=None, metadata={"help": "Gaussian camera config path."})
     gaussian_render_view: str = field(default="camera_top", metadata={"help": "Fallback Gaussian render view."})
     gaussian_enable_lora: bool = field(default=False, metadata={"help": "Enable Gaussian/VLM LoRA."})
     gaussian_lora_rank: int = field(default=8, metadata={"help": "Gaussian LoRA rank."})
     gaussian_lora_alpha: int = field(default=16, metadata={"help": "Gaussian LoRA alpha."})
+    gaussian_vlm_lora_targets: list[str] = field(
+        default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"],
+        metadata={"help": "VLM Linear names receiving LoRA."},
+    )
     gaussian_enable_staged_training: bool = field(default=False, metadata={"help": "Use official two-stage GaussianDream training schedule."})
     gaussian_stage1_steps: int = field(default=9000, metadata={"help": "Stage1 length; action expert is frozen before this step."})
     gaussian_stage1_render_weight: float = field(default=0.2, metadata={"help": "Stage1 render loss weight."})

@@ -132,11 +132,17 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_vggt_image_size: int = 518,
         gaussian_vggt_feature_dim: int = 2048,
         gaussian_vggt_freeze: bool = True,
+        gaussian_vggt_use_lora: bool = True,
+        gaussian_vggt_lora_rank: int = 8,
+        gaussian_vggt_lora_alpha: float = 32.0,
+        gaussian_vggt_lora_dropout: float = 0.05,
+        gaussian_vggt_lora_targets: Optional[list] = None,
         gaussian_camera_config: Optional[str] = None,
         gaussian_render_view: str = "camera_top",
         gaussian_enable_lora: bool = False,
         gaussian_lora_rank: int = 8,
         gaussian_lora_alpha: int = 16,
+        gaussian_vlm_lora_targets: Optional[list] = None,
         # [SIDA--]
 
         **kwargs
@@ -185,11 +191,25 @@ class LingbotVLAConfig(PretrainedConfig):
         self.gaussian_vggt_image_size = gaussian_vggt_image_size
         self.gaussian_vggt_feature_dim = gaussian_vggt_feature_dim
         self.gaussian_vggt_freeze = gaussian_vggt_freeze
+        self.gaussian_vggt_use_lora = gaussian_vggt_use_lora
+        self.gaussian_vggt_lora_rank = gaussian_vggt_lora_rank
+        self.gaussian_vggt_lora_alpha = gaussian_vggt_lora_alpha
+        self.gaussian_vggt_lora_dropout = gaussian_vggt_lora_dropout
+        self.gaussian_vggt_lora_targets = list(
+            gaussian_vggt_lora_targets
+            if gaussian_vggt_lora_targets is not None
+            else ("qkv", "proj", "fc1", "fc2")
+        )
         self.gaussian_camera_config = gaussian_camera_config
         self.gaussian_render_view = gaussian_render_view
         self.gaussian_enable_lora = gaussian_enable_lora
         self.gaussian_lora_rank = gaussian_lora_rank
         self.gaussian_lora_alpha = gaussian_lora_alpha
+        self.gaussian_vlm_lora_targets = list(
+            gaussian_vlm_lora_targets
+            if gaussian_vlm_lora_targets is not None
+            else ("q_proj", "k_proj", "v_proj", "o_proj")
+        )
         # [SIDA--]
         self.train_expert_only = train_expert_only
         self.use_cache = False

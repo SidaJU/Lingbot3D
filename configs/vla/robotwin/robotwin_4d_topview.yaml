@@ -187,11 +187,18 @@ train:
   gaussian_vggt_image_size: 518
   gaussian_vggt_feature_dim: 2048
   gaussian_vggt_freeze: true
+  # GaussianDream VGGT3DGSModel aggregator LoRA: qkv/proj/fc1/fc2.
+  gaussian_vggt_use_lora: true
+  gaussian_vggt_lora_rank: 8
+  gaussian_vggt_lora_alpha: 32.0
+  gaussian_vggt_lora_dropout: 0.05
+  gaussian_vggt_lora_targets: [qkv, proj, fc1, fc2]
   gaussian_camera_config: ./configs/robot_configs/robotwin_camera.json
   gaussian_render_view: camera_top
   gaussian_enable_lora: true
   gaussian_lora_rank: 8
   gaussian_lora_alpha: 16
+  gaussian_vlm_lora_targets: [q_proj, k_proj, v_proj, o_proj]
   # Official GaussianDream two-stage schedule.
   gaussian_enable_staged_training: true
   gaussian_stage1_steps: 9000

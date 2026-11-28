@@ -269,6 +269,8 @@ _NEW_PARAM_MARKERS = (
     ("gaussian_decoder.", "Gaussian decoder (new)"),
     (".lora_A.", "LoRA adapters (new)"),
     (".lora_B.", "LoRA adapters (new)"),
+    (".lora_down.", "GaussianDream VGGT LoRA (new)"),
+    (".lora_up.", "GaussianDream VGGT LoRA (new)"),
 )
 
 
@@ -277,7 +279,7 @@ def _is_main_process() -> bool:
 
 
 def _classify_param(name: str) -> str:
-    for marker, label in _PRETRAINED_EXTERNAL_MARKERS + _NEW_PARAM_MARKERS:
+    for marker, label in _NEW_PARAM_MARKERS + _PRETRAINED_EXTERNAL_MARKERS:
         if marker in name:
             return label
     return _OFFICIAL_WEIGHTS_LABEL
@@ -547,6 +549,8 @@ def load_model_weights(
             "gaussian_renderer.",
             ".lora_A.",
             ".lora_B.",
+            ".lora_down.",
+            ".lora_up.",
         )
         strict_missing = {
             name for name in parameter_names

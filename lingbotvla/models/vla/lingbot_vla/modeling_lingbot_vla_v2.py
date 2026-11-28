@@ -971,6 +971,14 @@ class FlowMatchingV2(FlowMatchingV1):
             raise ValueError(f"Unsupported Gaussian training stage: {stage}")
         self._set_gaussian_action_branch_trainable(bool(action_expert_trainable))
         self.config.gaussian_render_loss_weight = float(render_weight)
+        # GaussianDream scales the whole current-frame reconstruction term in
+        # stage 2, including its depth and render components.
+        base_current = float(getattr(self.config, "gaussian_depth_current_frame_weight", 0.5))
+        if stage == 1:
+            self.config.gaussian_depth_current_frame_weight = base_current
+        else:
+            world_multiplier = float(getattr(self.config, "gaussian_stage2_world_loss_multiplier", 0.1))
+            self.config.gaussian_depth_current_frame_weight = base_current * world_multiplier
         if depth_weight is not None:
             self.config.gaussian_depth_loss_weight = float(depth_weight)
         self._gaussian_active_stage = stage
@@ -1003,7 +1011,8 @@ class FlowMatchingV2(FlowMatchingV1):
         gaussian_depth_targets=None,
     ):
         weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
-        if not self.enable_gaussian_3d or weight <= 0.0:
+        depth_weight = float(getattr(self.config, "gaussian_depth_loss_weight", 0.0))
+        if not self.enable_gaussian_3d or (weight <= 0.0 and depth_weight <= 0.0):
             return hidden_states.new_zeros(()), {}
         if camera_intrinsics is None or camera_extrinsics is None or render_target_images is None:
             raise ValueError(
@@ -1204,10 +1213,14 @@ class FlowMatchingV2(FlowMatchingV1):
                 max_depth=float(getattr(self.config, "gaussian_depth_max", 8.0)),
                 scale_align=bool(getattr(self.config, "gaussian_depth_scale_align", False)),
             )
-            current_frame_weight = float(getattr(self.config, "gaussian_depth_current_frame_weight", 0.5))
-            depth_term = current_frame_weight * depth_weight * depth_loss
+            # Keep the unscaled current-frame reconstruction term here; the
+            # current-frame multiplier is applied once to RGB and depth below.
+            depth_term = depth_weight * depth_loss
             metrics["gaussian_render/depth_loss"] = depth_loss.detach()
             metrics["gaussian_render/depth_loss_weighted"] = depth_term.detach()
+        # RGB/reg/edge render term before any outer current-frame or render
+        # weighting. This is the value reported as GaussianRGB_Raw.
+        metrics["gaussian_render/render_raw"] = render_loss.detach()
         metrics["gaussian_render/total_raw"] = (render_loss + depth_term).detach()
 
         # [SIDA++] optional diagnostics for the Gaussian integration stage.
@@ -1338,8 +1351,10 @@ class FlowMatchingV2(FlowMatchingV1):
             if is_interval_dump:
                 self._gaussian_debug_saved_step = current_step
 
-        # Keep depth outside the RGB render-loss multiplier, as in the official current-frame path.
-        return weight * render_loss + depth_term, metrics
+        # Official current-frame path scales the complete reconstruction term:
+        #   current_frame_weight * (render_weight * render + depth_weight * depth).
+        current_frame_weight = float(getattr(self.config, "gaussian_depth_current_frame_weight", 0.5))
+        return current_frame_weight * (weight * render_loss + depth_term), metrics
     # [SIDA--]
 
     def forward(
@@ -1506,11 +1521,13 @@ class FlowMatchingV2(FlowMatchingV1):
         moe_metrics["gaussian_render_loss"] = loss_gaussian.detach()
         # [SIDA++] Keep the unweighted RGB reconstruction term available for
         # persistent training diagnostics. ``gaussian_render_loss`` remains
-        # the weighted contribution used by the total objective.
-        gaussian_weight = float(getattr(self.config, "gaussian_render_loss_weight", 0.0))
-        if gaussian_weight > 0.0:
+        # the weighted contribution used by the total objective. The raw term
+        # is emitted directly by _gaussian_rgb_render_loss; do not recover it
+        # by dividing the combined loss, which also contains depth.
+        raw_render_metric = align_metrics.get("gaussian_render/render_raw", None)
+        if raw_render_metric is not None:
             moe_metrics["gaussian_render_loss_raw"] = (
-                loss_gaussian.detach() / gaussian_weight
+                raw_render_metric.detach() if torch.is_tensor(raw_render_metric) else raw_render_metric
             )
         else:
             moe_metrics["gaussian_render_loss_raw"] = loss_gaussian.detach()

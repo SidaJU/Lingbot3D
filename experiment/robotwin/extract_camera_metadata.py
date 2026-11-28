@@ -195,7 +195,8 @@ def extract_mapped_dataset(map_path: Path, output_root: Path, *, overwrite: bool
 
     Paths in the map are relative to the map file. Official pi0 preprocessing
     keeps observations [0, T-1), resizes RGB, and shifts actions by one frame.
-    Other preprocessing must supply its exact source_frame_indices.
+    Other preprocessing must supply its exact source_frame_indices; when those
+    indices are present, ``processed_hdf5`` is optional.
     """
     map_path = map_path.expanduser().resolve()
     output_root = output_root.expanduser().resolve()
@@ -210,17 +211,28 @@ def extract_mapped_dataset(map_path: Path, output_root: Path, *, overwrite: bool
         if entry.get("episode_index") != index:
             raise ValueError(f"map must specify consecutive episode_index; invalid entry {index}")
         source = Path(entry["source_hdf5"])
-        processed = Path(entry["processed_hdf5"])
         source = source if source.is_absolute() else map_path.parent / source
-        processed = processed if processed.is_absolute() else map_path.parent / processed
-        with h5py.File(processed, "r") as handle:
-            count = len(handle["observations/qpos"])
-            if len(handle["action"]) != count:
-                raise ValueError(f"{processed}: state/action lengths disagree")
-            for camera in ("cam_high", "cam_left_wrist", "cam_right_wrist"):
-                if len(handle[f"observations/images/{camera}"]) != count:
-                    raise ValueError(f"{processed}: RGB/state lengths disagree")
+        processed_value = entry.get("processed_hdf5")
+        processed = Path(processed_value) if processed_value else None
+        if processed is not None:
+            processed = processed if processed.is_absolute() else map_path.parent / processed
         indices = entry.get("source_frame_indices")
+
+        if processed is not None:
+            with h5py.File(processed, "r") as handle:
+                count = len(handle["observations/qpos"])
+                if len(handle["action"]) != count:
+                    raise ValueError(f"{processed}: state/action lengths disagree")
+                for camera in ("cam_high", "cam_left_wrist", "cam_right_wrist"):
+                    if len(handle[f"observations/images/{camera}"]) != count:
+                        raise ValueError(f"{processed}: RGB/state lengths disagree")
+        elif indices is not None:
+            count = len(indices)
+        else:
+            raise ValueError(
+                f"episode {index}: provide processed_hdf5 or source_frame_indices in the episode map"
+            )
+
         if indices is None:
             with h5py.File(source, "r") as handle:
                 raw_count = len(handle["observation/head_camera/rgb"])
@@ -232,7 +244,8 @@ def extract_mapped_dataset(map_path: Path, output_root: Path, *, overwrite: bool
         name = f"episode_{index:06d}.camera.npz"
         extract_episode(source, output_root / name, overwrite=overwrite, frame_indices=indices)
         manifest_entries.append({"episode_index": index, "sidecar": name, "frame_count": count,
-                                 "source_hdf5": str(source), "processed_hdf5": str(processed)})
+                                 "source_hdf5": str(source),
+                                 "processed_hdf5": str(processed) if processed is not None else ""})
     manifest = {"format": "lingbot.robottwin.camera.manifest.v1", "training_aligned": True,
                 "episodes": manifest_entries}
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

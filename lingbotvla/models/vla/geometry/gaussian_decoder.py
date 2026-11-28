@@ -353,11 +353,8 @@ class GaussianParameterDecoder(nn.Module):
         rot_raw, scale_raw, opa_raw, sh_raw = raw.split([4, 3, 1, 9], dim=1)
 
         depth_logits = decoder_output["depth"].squeeze(1)
-        # Official static depth parameterization: 0..8m.
-        # Keep a physical lower bound: the render loss otherwise pushes the
-        # Gaussian sheet toward the rasterizer near plane and collapses the
-        # gradient chain (see docs/gaussian_rgb_render_depth_collapse.md).
-        depth_map = 0.5 + 7.5 * torch.sigmoid(depth_logits)
+        # Official GaussianDream static depth parameterization: 0..8m.
+        depth_map = 8.0 * torch.sigmoid(depth_logits)
 
         H_dec, W_dec = depth_map.shape[-2:]
         batch = depth_map.shape[0]

@@ -116,7 +116,7 @@ class LingbotVLAConfig(PretrainedConfig):
         gaussian_depth_conf_threshold: float = 0.5,
         gaussian_depth_min: float = 0.05,
         gaussian_depth_max: float = 8.0,
-        gaussian_depth_scale_align: bool = True,
+        gaussian_depth_scale_align: bool = False,
         gaussian_use_lpips: bool = False,
         gaussian_lpips_weight: float = 0.1,
         gaussian_lpips_net: str = "vgg",

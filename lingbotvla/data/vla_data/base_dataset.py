@@ -217,6 +217,10 @@ class VLADataset(Dataset):
             load_image=load_image
         )
 
+        expected_episode_lengths = [
+            int(episode["length"]) for episode in self.dataset_meta.episodes
+        ]
+
         # [SIDA++] add by SidaZhu for preserving per-frame RoboTwin K/T metadata
         metadata_root = getattr(dataset_config, "camera_metadata_root", None)
         self.camera_metadata_index = None
@@ -225,6 +229,15 @@ class VLADataset(Dataset):
 
             metadata_root = resolve_camera_metadata_root(metadata_root, repo_id)
             self.camera_metadata_index = CameraMetadataIndex(metadata_root)
+            camera_lengths = self.camera_metadata_index.frame_counts
+            if len(camera_lengths) != len(expected_episode_lengths) or any(
+                count is None or int(count) != length
+                for count, length in zip(camera_lengths, expected_episode_lengths)
+            ):
+                raise ValueError(
+                    "camera sidecar episode lengths do not match LeRobot episode lengths; "
+                    "regenerate the camera sidecars with a LeRobot-derived episode map"
+                )
             self._camera_image_hw = tuple(image_size)
             self._camera_names = [key.rsplit('.', 1)[-1] for key in self.feature_transform.feature_config.images]
             self.feature_transform.feature_to_keep.update(
@@ -240,6 +253,15 @@ class VLADataset(Dataset):
 
             depth_root = resolve_depth_metadata_root(depth_root, repo_id)
             self.depth_metadata_index = DepthSidecarIndex(depth_root)
+            depth_lengths = self.depth_metadata_index.frame_counts
+            if len(depth_lengths) != len(expected_episode_lengths) or any(
+                int(count) != length
+                for count, length in zip(depth_lengths, expected_episode_lengths)
+            ):
+                raise ValueError(
+                    "depth sidecar episode lengths do not match LeRobot episode lengths; "
+                    "regenerate the depth sidecars"
+                )
             self._depth_camera_names = [
                 key.rsplit('.', 1)[-1] for key in self.feature_transform.feature_config.images
             ]

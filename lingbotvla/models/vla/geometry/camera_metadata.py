@@ -188,6 +188,7 @@ class CameraMetadataIndex:
         if not isinstance(entries, list):
             raise ValueError(f"camera metadata manifest has no episode list: {manifest_path}")
         self._sidecars = []
+        self.frame_counts: list[int | None] = []
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict) or "sidecar" not in entry:
                 raise ValueError(f"invalid episode entry {index} in {manifest_path}")
@@ -197,6 +198,8 @@ class CameraMetadataIndex:
                     f"{entry.get('episode_index')}"
                 )
             self._sidecars.append(self.root / entry["sidecar"])
+            frame_count = entry.get("frame_count")
+            self.frame_counts.append(int(frame_count) if frame_count is not None else None)
         self._cache: OrderedDict[int, CameraFrameMetadata] = OrderedDict()
 
     def episode(self, episode_index: int) -> CameraFrameMetadata:

@@ -153,6 +153,10 @@ class VGGTFeatureEncoder(nn.Module):
             images = images / 255.0
         images = images.clamp(0.0, 1.0)
         batch, views = images.shape[:2]
+        # GaussianDream's static encoder selects the current agent view.
+        if views > 1:
+            images = images[:, :1]
+            views = 1
         images = F.interpolate(
             images.reshape(batch * views, 3, images.shape[-2], images.shape[-1]),
             size=(self.image_size, self.image_size),

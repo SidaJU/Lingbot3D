@@ -1,4 +1,4 @@
-"""Single-step multi-view adapter for the optional 3D prefix branch."""
+"""Static Gaussian prefix adapter aligned with GaussianDream."""
 
 # [SIDA++] add by SidaZhu for the Gaussian 3D prefix extension.
 # Purpose: compress multi-view visual features into the dedicated gs_3d VLM
@@ -9,20 +9,12 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
-import torch
 from torch import Tensor, nn
 
 
 # [SIDA++] add by SidaZhu for the first single-step 3D prefix adapter
 class Gaussian3DPrefixAdapter(nn.Module):
-    """Turn frozen multi-view features into fixed-length LingBot prefix tokens.
-
-    This module intentionally has no temporal/TGE path. The upstream feature
-    extractor owns camera/view processing; this adapter only performs learned
-    query pooling and projects into the Qwen3-VL hidden width.
-    """
+    """Project one agent/top-view VGGT spatial grid into VLA width."""
 
     def __init__(
         self,
@@ -34,40 +26,26 @@ class Gaussian3DPrefixAdapter(nn.Module):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
-        if adapter_dim % num_heads != 0:
-            raise ValueError("adapter_dim must be divisible by num_heads")
-        self.num_tokens = int(num_tokens)
-        self.feature_proj = nn.Linear(feature_dim, adapter_dim)
-        self.query_tokens = nn.Parameter(torch.randn(1, self.num_tokens, adapter_dim) * 0.02)
-        self.cross_attention = nn.MultiheadAttention(
-            adapter_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.norm = nn.LayerNorm(adapter_dim)
-        self.to_llm = nn.Linear(adapter_dim, llm_dim)
+        # Keep legacy arguments so existing configs and checkpoints still load.
+        del adapter_dim, num_tokens, num_heads, dropout
+        self.feature_dim = int(feature_dim)
+        self.to_llm = nn.Linear(self.feature_dim, int(llm_dim))
 
     def forward(self, view_features: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
-        """Return ``[B,num_tokens,llm_dim]`` from [B,V,N,D] or [B,N,D]."""
-
+        """Return [B,256,llm_dim] from [B,V,256,D] or [B,256,D]."""
+        del key_padding_mask
         if view_features.ndim == 4:
-            batch, views, tokens, dim = view_features.shape
-            memory = view_features.reshape(batch, views * tokens, dim)
+            _, views, _, dim = view_features.shape
+            if views < 1:
+                raise ValueError("GaussianDream static prefix received no views")
+            # Official static path: current agent/top view only.
+            features = view_features[:, 0]
         elif view_features.ndim == 3:
-            batch, _, dim = view_features.shape
-            memory = view_features
+            features = view_features
+            _, _, dim = features.shape
         else:
-            raise ValueError(f"Expected [B,N,D] or [B,V,N,D], got {tuple(view_features.shape)}")
-        adapter_dtype = self.feature_proj.weight.dtype
-        memory = self.feature_proj(memory.to(dtype=adapter_dtype))
-        queries = self.query_tokens.expand(batch, -1, -1).to(dtype=adapter_dtype)
-        pooled, _ = self.cross_attention(
-            queries,
-            memory,
-            memory,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        return self.to_llm(self.norm(pooled)).to(dtype=view_features.dtype)
+            raise ValueError(f"Expected [B,V,N,D] or [B,N,D], got {tuple(view_features.shape)}")
+        if dim != self.feature_dim:
+            raise ValueError(f"Expected VGGT feature dim {self.feature_dim}, got {dim}")
+        return self.to_llm(features.to(dtype=self.to_llm.weight.dtype))
 # [SIDA--]

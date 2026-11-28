@@ -49,6 +49,7 @@ from lingbotvla.models.vla.geometry import (
     compute_edge_smooth_loss,
     compute_gaussian_depth_loss,
     compute_gaussian_regularization,
+    da2_disparity_to_metric_depth,
     compute_rgb_render_loss,
     VGGTFeatureEncoder,
 )
@@ -1156,6 +1157,12 @@ class FlowMatchingV2(FlowMatchingV1):
                         f"got {tuple(gaussian_depth_targets.shape)}"
                     )
                 debug_depth_target = target_depth.float().to(hidden_states.device)
+                if bool(getattr(self.config, "gaussian_depth_target_is_disparity", True)):
+                    debug_depth_target = da2_disparity_to_metric_depth(
+                        debug_depth_target,
+                        min_depth=0.05,
+                        max_depth=float(getattr(self.config, "gaussian_depth_target_metric_max", 8.0)),
+                    )
         else:
             debug_depth_target = getattr(self, "_gaussian_vggt_depth", None)
             if debug_depth_target is not None and debug_depth_target.ndim == 5:

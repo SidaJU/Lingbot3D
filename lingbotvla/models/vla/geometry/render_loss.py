@@ -165,6 +165,31 @@ def compute_edge_smooth_loss(rgb: torch.Tensor, depth_map: torch.Tensor) -> torc
     return grad_disp_x.mean() + grad_disp_y.mean()
 
 
+def da2_disparity_to_metric_depth(
+    disparity: torch.Tensor,
+    min_depth: float = 0.05,
+    max_depth: float = 8.0,
+) -> torch.Tensor:
+    """Convert Depth Anything V2 relative/disparity output to metric depth.
+
+    DA2 raw output is disparity-like: near pixels have larger values. The
+    Gaussian decoder predicts metric depth used for backprojection, where near
+    pixels have smaller values. Inverting and scaling by ``max_depth`` puts the
+    target in the same monotonic space as the prediction, which is required by
+    the official linear L1 depth loss.
+
+    The conversion is deterministic and elementwise. A lower bound of 1 is
+    imposed on the disparity so far-background zeros clamp to ``max_depth``
+    instead of producing infinities.
+    """
+    if max_depth <= min_depth:
+        raise ValueError(f"max_depth must exceed min_depth, got {min_depth} and {max_depth}")
+    disp = torch.nan_to_num(disparity.float(), nan=0.0, posinf=max_depth, neginf=0.0)
+    disp = disp.clamp_min(1.0)
+    metric = max_depth / disp
+    return metric.clamp(min_depth, max_depth)
+
+
 def compute_gaussian_depth_loss(
     pred_depth: torch.Tensor,
     target_depth: torch.Tensor,

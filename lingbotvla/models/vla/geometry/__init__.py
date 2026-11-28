@@ -23,6 +23,7 @@ from .vggt_adapter import VGGTFeatureEncoder
 from .render_loss import (
     build_lpips_fn,
     compute_edge_smooth_loss,
+    da2_disparity_to_metric_depth,
     compute_gaussian_depth_loss,
     compute_gaussian_regularization,
     compute_rgb_render_loss,
@@ -39,6 +40,7 @@ __all__ = [
     "canonical_camera_name",
     "build_lpips_fn",
     "compute_edge_smooth_loss",
+    "da2_disparity_to_metric_depth",
     "compute_gaussian_depth_loss",
     "compute_gaussian_regularization",
     "compute_rgb_render_loss",

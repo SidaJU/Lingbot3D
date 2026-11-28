@@ -173,6 +173,9 @@ train:
   gaussian_depth_conf_threshold: 0.5
   gaussian_depth_min: 0.0
   gaussian_depth_max: 1000000000.0
+  # DA2 sidecars store relative disparity (near=large); convert to metric depth.
+  gaussian_depth_target_is_disparity: true
+  gaussian_depth_target_metric_max: 8.0
   gaussian_depth_scale_align: false
   # GaussianDream uses optional VGG LPIPS with weight 0.1. Enable only after
   # `pip install lpips` succeeds on the training machine.

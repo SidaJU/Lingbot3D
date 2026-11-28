@@ -222,6 +222,14 @@ class MyTrainingArguments(TrainingArguments):
     gaussian_depth_conf_threshold: float = field(default=0.5, metadata={"help": "VGGT depth confidence threshold."})
     gaussian_depth_min: float = field(default=0.05, metadata={"help": "Minimum depth used by the depth loss."})
     gaussian_depth_max: float = field(default=8.0, metadata={"help": "Maximum depth used by the depth loss."})
+    gaussian_depth_target_is_disparity: bool = field(
+        default=True,
+        metadata={"help": "DA2 sidecar stores disparity-like depth; invert to metric depth before L1."},
+    )
+    gaussian_depth_target_metric_max: float = field(
+        default=8.0,
+        metadata={"help": "Far-plane metric depth used when converting DA2 disparity to depth."},
+    )
     gaussian_depth_scale_align: bool = field(
         default=False,
         metadata={"help": "Use median-aligned log-L1 instead of official GaussianDream linear L1."},
